@@ -1,0 +1,22 @@
+﻿original_name,standard_name,category,frequency,is_target,is_yoy,is_cumulative,leading_indicator,data_quality,notes
+GDP_同比增速,GDP_同比增速,目标,quarterly,True,True,False,False,high,converted from NBS raw Excel
+GDP_累计值,GDP_累计值,目标,quarterly,False,False,True,True,high,converted from NBS raw Excel
+PMI_PMI,PMI_PMI,PMI,monthly,False,False,False,True,high,converted from NBS raw Excel
+PMI_从业人员,PMI_从业人员,PMI,monthly,False,False,False,True,high,converted from NBS raw Excel
+PMI_供应商配送时间,PMI_供应商配送时间,PMI,monthly,False,False,False,True,high,converted from NBS raw Excel
+PMI_原材料库存,PMI_原材料库存,PMI,monthly,False,False,False,True,high,converted from NBS raw Excel
+PMI_新订单,PMI_新订单,PMI,monthly,False,False,False,True,high,converted from NBS raw Excel
+PMI_生产,PMI_生产,PMI,monthly,False,False,False,True,high,converted from NBS raw Excel
+固定资产投资（不含农户）_同比增速,固定资产投资（不含农户）_同比增速,投资,monthly,False,True,False,True,high,converted from NBS raw Excel
+工业增加值_同比增速,工业增加值_同比增速,工业,monthly,False,True,False,True,high,converted from NBS raw Excel
+房地产开发投资_同比增速,房地产开发投资_同比增速,投资,monthly,False,True,False,True,high,converted from NBS raw Excel
+房地产开发投资_累计值,房地产开发投资_累计值,投资,monthly,False,False,True,True,high,converted from NBS raw Excel
+社会消费品零售总额_同比增速,社会消费品零售总额_同比增速,消费,monthly,False,True,False,True,high,converted from NBS raw Excel
+社会消费品零售总额_累计值,社会消费品零售总额_累计值,消费,monthly,False,False,True,True,high,converted from NBS raw Excel
+第一产业增加值_同比增速,第一产业增加值_同比增速,产业,quarterly,False,True,False,True,high,converted from NBS raw Excel
+第一产业增加值_累计值,第一产业增加值_累计值,产业,quarterly,False,False,True,True,high,converted from NBS raw Excel
+第三产业增加值_同比增速,第三产业增加值_同比增速,产业,quarterly,False,True,False,True,high,converted from NBS raw Excel
+第三产业增加值_累计值,第三产业增加值_累计值,产业,quarterly,False,False,True,True,high,converted from NBS raw Excel
+第二产业增加值_同比增速,第二产业增加值_同比增速,产业,quarterly,False,True,False,True,high,converted from NBS raw Excel
+第二产业增加值_累计值,第二产业增加值_累计值,产业,quarterly,False,False,True,True,high,converted from NBS raw Excel
+规模以上工业增加值_同比增速,规模以上工业增加值_同比增速,工业,monthly,False,True,False,True,high,converted from NBS raw Excel
