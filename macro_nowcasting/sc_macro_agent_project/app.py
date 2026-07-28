@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict, Iterable, Tuple
+import sys
+import traceback
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
-
-from sc_macro_agent import AppConfig, PredictionEngine
+# --- Phase 1: bare-minimum imports for error display ---
+try:
+    import streamlit as st
+except ImportError as e:
+    # streamlit itself is missing — nothing we can do; let it crash with a clear message
+    raise RuntimeError(f"streamlit 未安装，请检查 requirements.txt: {e}") from e
 
 st.set_page_config(
     page_title="四川省 GDP 混频预测系统",
@@ -19,6 +16,26 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# --- Phase 2: all other imports, with error display ---
+try:
+    from pathlib import Path
+    from typing import Any, Dict, Iterable, Tuple
+
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    import pandas as pd
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    from sc_macro_agent import AppConfig, PredictionEngine
+    _IMPORT_OK = True
+except Exception as _import_err:
+    _IMPORT_OK = False
+    st.error(f"## 导入失败: {_import_err}")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ==================== 设计系统 ====================
 COLORS = {
