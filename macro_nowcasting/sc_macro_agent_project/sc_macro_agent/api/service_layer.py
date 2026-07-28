@@ -4,7 +4,7 @@ API 不直接碰 PredictionEngine 的内部细节，而是通过 Service 暴露�
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..prediction_engine import PredictionEngine
 

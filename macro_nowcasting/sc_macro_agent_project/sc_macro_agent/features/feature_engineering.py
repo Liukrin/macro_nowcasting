@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -30,12 +30,157 @@ from ..utils import (
     safe_max,
     safe_mean,
     safe_min,
-    safe_pct_change,
     safe_std,
     safe_trend,
-    sorted_unique,
     winsorize_series,
 )
+
+
+def select_features_by_policy(
+    panel: pd.DataFrame,
+    registry: "FeatureRegistry",
+    config: "FeatureConfig",
+    metadata_df: Optional[pd.DataFrame] = None,
+) -> List[str]:
+    """\n    规则驱动的特征白名单选择器。\n\n    完全不依赖数据分布（方差/相关性），只根据元数据和指标名称决定入选特征。\n    传入任何子集数据，返回的特征列表都一样（消除信息泄漏）。\n    """
+    protected = {"quarter_end", "target_value"}
+    all_cols = [c for c in panel.columns if c not in protected and pd.api.types.is_numeric_dtype(panel[c])]
+
+    # 1. 用 metadata 判断每个基础指标的属性
+    is_cum: Dict[str, bool] = {}
+    if metadata_df is not None and not metadata_df.empty:
+        for _, row in metadata_df.iterrows():
+            name = str(row.get("standard_name", row.get("original_name", "")))
+            is_cum[name] = str(row.get("is_cumulative", "")).strip().lower() == "true"
+
+    def _region(col: str) -> str:
+        return col.split("__", 1)[0] if "__" in col else "unknown"
+
+    def _is_target_lag(col: str) -> bool:
+        return col.startswith("target_lag_")
+
+    def _is_cumulative_feature(col: str) -> bool:
+        """Check if a column derives from a cumulative (level) indicator."""
+        body = col.split("__", 1)[-1] if "__" in col else col
+        for lag in range(1, 10):
+            if body.endswith(f"__lag{lag}"):
+                body = body[: -len(f"__lag{lag}")]
+                break
+        # Strip pandas merge disambiguation suffixes (_x, _y)
+        if body.endswith("_x") or body.endswith("_y"):
+            body = body[:-2]
+        # Check metadata first
+        for base_name, is_c in is_cum.items():
+            if base_name in body:
+                if is_c:
+                    return True
+                if "同比" in body or "增速" in body:
+                    return False
+        return "累计值" in body
+
+    def _matches_indicator(col: str, indicator_keywords: List[str]) -> bool:
+        """Check if a column matches any of the indicator keyword patterns."""
+        for kw in indicator_keywords:
+            if kw in col:
+                return True
+        return False
+
+    def _has_agg_method(col: str, methods: List[str]) -> bool:
+        """Check if column uses one of the allowed aggregation methods."""
+        body = col.split("__", 1)[-1] if "__" in col else col
+        # Strip __lagN suffix
+        for lag in range(1, 10):
+            if body.endswith(f"__lag{lag}"):
+                body = body[: -len(f"__lag{lag}")]
+                break
+        # Strip pandas merge disambiguation suffixes (_x, _y)
+        if body.endswith("_x") or body.endswith("_y"):
+            body = body[:-2]
+        for m in methods:
+            if body.endswith(f"_{m}"):
+                return True
+        return False
+
+    # 2. Build whitelist using fuzzy keyword matching on indicator names
+    selected: List[str] = []
+
+    # --- Tier B: Sichuan local indicators (must have) ---
+    # New data uses "累计同比" (YTD cumulative YoY) naming
+    sc_keywords = [
+        "规模以上工业增加值_累计同比",
+        "固定资产投资",
+        "社会消费品零售总额_累计同比",
+        "房地产开发投资_累计同比",
+    ]
+    for col in all_cols:
+        if "四川省" not in col:
+            continue
+        if _is_cumulative_feature(col):
+            continue  # exclude level features (累计值 without 同比)
+        if not _has_agg_method(col, config.policy_agg_methods):
+            continue
+        if _matches_indicator(col, sc_keywords):
+            selected.append(col)
+
+    # --- Tier C: National leading indicators ---
+    # ytd_yoy = YTD cumulative YoY, mom_yoy = monthly YoY
+    nat_keywords = [
+        "工业增加值_当月同比_mom_yoy",
+        "固定资产投资（不含农户）_累计同比_ytd_yoy",
+    ]
+    for col in all_cols:
+        if "全国" not in col:
+            continue
+        if _is_cumulative_feature(col):
+            continue
+        if not _has_agg_method(col, config.policy_agg_methods):
+            continue
+        if _matches_indicator(col, nat_keywords):
+            selected.append(col)
+
+    # --- PMI indicators (classic leading indicators, non-YoY) ---
+    # pmi_data.csv column names: PMI, 生产, 新订单, ...
+    # After pivot + lag: 全国__PMI_last, 全国__生产_mean__lag1, etc.
+    pmi_patterns = ["__PMI_", "__生产_", "__新订单_"]
+    for col in all_cols:
+        if "全国" not in col:
+            continue
+        if _is_cumulative_feature(col):
+            continue
+        if not _has_agg_method(col, config.policy_agg_methods):
+            continue
+        # Check if column contains a PMI indicator marker
+        for pp in pmi_patterns:
+            if pp in col:
+                selected.append(col)
+                break
+
+    # --- Tier E: Target lags ---
+    # target_lag_1 is mandatory — it's the anchor for delta modeling
+    if "target_lag_1" in all_cols and "target_lag_1" not in selected:
+        selected.append("target_lag_1")
+    for col in sorted(all_cols):
+        if _is_target_lag(col) and col not in selected:
+            selected.append(col)
+
+    # 3. Remove duplicates, cap at max
+    selected = list(dict.fromkeys(selected))
+    if len(selected) > config.policy_max_features:
+        # Priority: target_lags > Sichuan local > PMI > other national
+        target_lag_cols = [c for c in selected if _is_target_lag(c)]
+        sichuan = [c for c in selected if _region(c) == "四川省"]
+        pmi = [c for c in selected if "PMI" in c and c not in target_lag_cols and c not in sichuan]
+        national = [c for c in selected if _region(c) == "全国" and c not in pmi and c not in target_lag_cols and c not in sichuan]
+        other = [c for c in selected if c not in target_lag_cols and c not in sichuan and c not in pmi and c not in national]
+        selected = (target_lag_cols + sichuan + pmi + national + other)[: config.policy_max_features]
+
+    # 4. Report missing Sichuan indicators
+    found_sc = [c for c in selected if "四川省" in c]
+    for kw in ["规模以上工业增加值", "固定资产投资", "社会消费品零售总额", "房地产开发投资"]:
+        if not any(kw in c for c in found_sc):
+            print(f"  [WARNING] Sichuan indicator '{kw}' not found in panel")
+
+    return selected
 
 
 @dataclass
@@ -257,6 +402,7 @@ class FeatureEngineer:
         base_features = [
             c for c in out.columns
             if c not in {"quarter_end", "target_value"} and pd.api.types.is_numeric_dtype(out[c])
+            and not c.startswith("target_lag_")  # 禁止对已滞后列再次施加 lag
         ]
         lagged_columns = {}
         for col in base_features:
@@ -334,6 +480,11 @@ class FeatureEngineer:
 
     def _clean_and_impute(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
+        # Drop rows without target FIRST, before any fill.
+        # This prevents the outer-merge artifacts (128 rows  > 64 valid quarters)
+        # from corrupting the fill logic's last_valid_idx calculation.
+        out = out.dropna(subset=["target_value"]).reset_index(drop=True)
+
         for col in out.select_dtypes(include=[np.number]).columns:
             if col == "target_value":
                 continue
@@ -341,7 +492,11 @@ class FeatureEngineer:
             if self.config.clip_outliers:
                 ser = winsorize_series(ser, self.config.winsorize_quantile)
             if self.config.fill_method == "ffill_bfill":
-                ser = ser.ffill().bfill()
+                # Only ffill for internal gaps — do NOT fill tail-end missing
+                non_na_mask = ser.notna()
+                if non_na_mask.any():
+                    last_valid_idx = int(non_na_mask[non_na_mask].index[-1])
+                    ser.loc[:last_valid_idx] = ser.loc[:last_valid_idx].ffill().bfill()
             elif self.config.fill_method == "zero":
                 ser = ser.fillna(0.0)
             else:
@@ -357,7 +512,6 @@ class FeatureEngineer:
             if miss_ratio <= self.config.max_feature_missing_ratio and non_na_count >= self.config.min_non_na_observations:
                 keep_cols.append(col)
         out = out[keep_cols].copy()
-        out = out.dropna(subset=["target_value"]).reset_index(drop=True)
         return out
 
     def build_training_panel(
@@ -411,16 +565,25 @@ class FeatureEngineer:
         panel = self._add_interactions(panel, registry)
         panel = self._clean_and_impute(panel)
 
-        # 限制特征数：不超过样本数的 1/2，避免 p>>n 导致模型退化
-        n_rows = len(panel)
+        # 特征选择
         protected = ["quarter_end", "target_value"]
-        feature_cols = [c for c in panel.columns if c not in protected]
-        feature_cap = min(self.config.small_sample_feature_cap, max(10, n_rows // 2))
-        if len(feature_cols) > feature_cap:
-            panel = cap_feature_count(panel, protected=protected, max_features=feature_cap)
-            notes.append(f"feature_cap_applied: {len(feature_cols)} -> {feature_cap}")
+        n_rows = len(panel)
 
-        feature_cols = [c for c in panel.columns if c not in protected]
+        if self.config.use_policy_selection:
+            # 规则驱动的白名单 —— 不依赖数据分布，消除泄漏
+            feature_cols = select_features_by_policy(panel, registry, self.config, metadata_df)
+            feature_cols = [c for c in feature_cols if c in panel.columns]
+            panel = panel[protected + feature_cols].copy()
+            notes.append(f"policy_selection: {len(feature_cols)} features")
+        else:
+            # 旧逻辑：方差排序（保留但默认关闭）
+            feature_cols = [c for c in panel.columns if c not in protected]
+            feature_cap = min(self.config.small_sample_feature_cap, max(15, n_rows * 3 // 2))
+            if len(feature_cols) > feature_cap:
+                panel = cap_feature_count(panel, protected=protected, max_features=feature_cap)
+                notes.append(f"feature_cap_applied: {len(feature_cols)} -> {feature_cap}")
+            feature_cols = [c for c in panel.columns if c not in protected]
+
         if not feature_cols:
             raise FeatureBuildError("没有可用于训练的特征列")
 

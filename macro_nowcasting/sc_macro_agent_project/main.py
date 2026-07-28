@@ -4,7 +4,7 @@ FastAPI 入口。
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +16,6 @@ from sc_macro_agent.api.schemas import (
     BacktestResponse,
     DataAuditResponse,
     DataAvailabilityResponse,
-    FactorSummaryResponse,
     HealthResponse,
     PredictionRequest,
     PredictionResponse,
@@ -106,7 +105,7 @@ def predict(request: PredictionRequest):
     engine = get_engine()
     if request.force_retrain:
         engine.train(force_rebuild=True)
-    result = engine.predict_next(use_blend=request.use_blend)
+    result = engine.predict_next()
     return PredictionResponse(**result)
 
 
@@ -117,12 +116,10 @@ def factors():
     return engine.get_factor_summary()
 
 
-@app.post("/agent/run", response_model=AgentTaskResponse)
+@app.post("/agent/run")
 def run_agent(request: AgentTaskRequest):
     engine = get_engine()
-    result = engine.run_agent(
-        goal=request.goal,
-        save_artifacts=request.save_artifacts,
-        force_refresh=request.force_refresh,
-    )
-    return AgentTaskResponse(**result)
+    from sc_macro_agent.agents import AgentOrchestrator
+    orch = AgentOrchestrator()
+    result = orch.run(engine)
+    return result

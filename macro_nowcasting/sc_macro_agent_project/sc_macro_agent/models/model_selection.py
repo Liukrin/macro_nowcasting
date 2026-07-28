@@ -9,14 +9,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
 from ..config import ModelConfig
 from ..logging_utils import get_logger
 from ..utils import metrics_dict
-from .baselines import LastValueModel, MeanRecentModel
+from .baselines import LastValueModel, MeanRecentModel, SeasonalNaiveModel, DriftModel
 from .midas_model import RidgeMIDASModel, ElasticMIDASModel
 from .hybrid_model import HybridResidualModel
 from ..exceptions import ModelTrainingError
@@ -47,6 +47,10 @@ class ModelFactory:
             return LastValueModel()
         if name == "mean_recent":
             return MeanRecentModel(window=4)
+        if name == "seasonal_naive":
+            return SeasonalNaiveModel()
+        if name == "drift":
+            return DriftModel()
         if name == "ridge_midas":
             return RidgeMIDASModel(alphas=self.config.ridge_alphas)
         if name == "elastic_midas":

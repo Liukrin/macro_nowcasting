@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, Tuple
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import pandas as pd
 import plotly.express as px
@@ -759,7 +762,8 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
 
     page = st.sidebar.radio(
         "导航",
-        ["🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析", "🧪 数据质量", "⚙️ Agent 工作流"],
+        ["🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析", "🧪 数据质量",
+         "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答"],
         label_visibility="collapsed",
     )
 
@@ -781,6 +785,25 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
     cols = st.sidebar.columns(2)
     cols[0].metric("样本", status.get("n_rows") or 0, label_visibility="collapsed")
     cols[1].metric("特征", status.get("n_features") or 0, label_visibility="collapsed")
+
+    # Prediction info
+    prediction = data["prediction"]
+    if prediction and prediction.get("prediction_value"):
+        st.sidebar.markdown(
+            f'<div style="height: 1px; background: linear-gradient(90deg, transparent, {COLORS["border"]}, transparent); margin: 1.5rem 0;"></div>',
+            unsafe_allow_html=True)
+        st.sidebar.markdown(
+            f'<div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: {COLORS["text_muted"]}; margin-bottom: 0.5rem; font-weight: 700;">最新预测</div>',
+            unsafe_allow_html=True)
+        pred_val = prediction.get("prediction_value", 0)
+        pred_q = prediction.get("prediction_quarter", "?")
+        ci = prediction.get("confidence_interval", {})
+        st.sidebar.markdown(
+            f'<div style="font-size: 1.2rem; font-weight: 800; color: {COLORS["accent_cyan"]};">{pred_q}: {pred_val:.1f}%</div>',
+            unsafe_allow_html=True)
+        st.sidebar.caption(f"90% CI [{ci.get('lower','?')}, {ci.get('upper','?')}] | {prediction.get('target_transform','?')}")
+        cs = prediction.get("chronos_state", "?")
+        st.sidebar.caption(f"Chronos: {cs} | 修正: {prediction.get('chronos_correction',0):.2f}")
 
     st.sidebar.markdown(
         f'<div style="height: 1px; background: linear-gradient(90deg, transparent, {COLORS["border"]}, transparent); margin: 1.5rem 0;"></div>',
@@ -1067,73 +1090,33 @@ def render_backtest(data: Dict[str, Any]) -> None:
 
 
 def render_factors(data: Dict[str, Any]) -> None:
-    factor_summary = data["factor_summary"]
     top_features_df = data["top_features_df"]
-    family_df = data["family_df"]
-    region_df = data["region_df"]
+    summary = data["summary"]
 
-    render_section("Factor Analysis", "因子分析与解释性", "动态因子模型（DFM）与特征重要性")
+    render_section("Features & Importance", "特征分析与重要性", "白名单特征选择 + 模型系数排序（DFM 已停用）")
 
-    cols = st.columns(3)
-    cols[0].metric("提取因子数", factor_summary.get("n_factors", 0))
-    cols[1].metric("累计解释方差", fmt_pct_decimal(factor_summary.get("cumulative_variance"), 1))
-    cols[2].metric("模型拟合状态", "已拟合" if factor_summary.get("is_fitted") else "未拟合")
-
-    st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
-
-    left, right = st.columns([1, 1], gap="large")
-    with left:
-        fig = create_factor_variance_chart(factor_summary)
-        if fig is not None:
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        else:
-            st.info("当前没有可视化的因子解释方差。")
-
-    with right:
-        top_loadings = factor_summary.get("top_loadings") or []
-        if top_loadings:
-            loading_rows = []
-            for block in top_loadings:
-                factor_name = block.get("factor")
-                for item in block.get("top_loadings", [])[:5]:
-                    loading_rows.append({
-                        "因子": factor_name,
-                        "特征": item.get("feature"),
-                        "载荷": item.get("loading"),
-                        "绝对载荷": item.get("abs_loading"),
-                    })
-            st.dataframe(pd.DataFrame(loading_rows), use_container_width=True, hide_index=True, height=300)
-        else:
-            st.info("当前没有 top loadings 可展示。")
-
-    st.markdown(
-        "<div style='height: 1px; background: linear-gradient(90deg, transparent, #2a2e37, transparent); margin: 2rem 0;'></div>",
-        unsafe_allow_html=True)
+    # Show feature count from current model
+    engine = load_engine()
+    if engine.feature_artifacts is not None:
+        feats = engine.feature_artifacts.feature_columns
+        st.caption(f"当前特征集（{engine.config.features.target_transform} 模式）: {len(feats)} 个特征")
+        import json
+        fl_path = Path("artifacts/final/feature_list.json")
+        if fl_path.exists():
+            with open(fl_path, encoding="utf-8") as f:
+                fl = json.load(f)
+            fl_df = pd.DataFrame(fl)
+            st.dataframe(fl_df, use_container_width=True, hide_index=True)
 
     score_df = feature_score_df(top_features_df)
-    f1, f2 = st.columns([1.2, 0.8], gap="large")
-
-    with f1:
-        render_section("Features", "特征重要性排序", "基于模型系数与树形结构的综合评分")
+    if not score_df.empty:
         fig = create_feature_chart(score_df)
         if fig is not None:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        elif not top_features_df.empty:
-            st.dataframe(top_features_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("当前没有特征重要性结果。")
-
-    with f2:
-        render_section("Registry", "特征注册表分布", "按类别与地区划分的特征库统计")
-        inner1, inner2 = st.columns(2)
-        fig1 = create_registry_pie(family_df, "family")
-        fig2 = create_registry_pie(region_df, "region")
-        if fig1 is not None:
-            inner1.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False})
-        if fig2 is not None:
-            inner2.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False})
-        if family_df.empty and region_df.empty:
-            st.info("当前没有 feature registry 统计信息。")
+    elif not top_features_df.empty:
+        st.dataframe(top_features_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("当前没有特征重要性结果。运行模型训练后刷新。")
 
 
 def render_data_quality(data: Dict[str, Any]) -> None:
@@ -1200,6 +1183,161 @@ def render_agent(data: Dict[str, Any]) -> None:
             st.json(summary, expanded=False)
 
 
+# ==================== v2.1 新页面 ====================
+
+def render_agent_v2(data: Dict[str, Any]) -> None:
+    """Agent 页：接入新 orchestrator 四角色流水线。"""
+    render_section("Agent Workflow", "AI Agent 协作流水线", "Data → Model → Analyst → Critic 四角色协作")
+
+    if st.button("▶ 启动 Agent 流水线", use_container_width=True):
+        with st.status("Agent 流水线运行中...", expanded=True) as status_box:
+            engine = data.get("engine") or load_engine()
+            from sc_macro_agent.agents import AgentOrchestrator
+            orch = AgentOrchestrator()
+            result = orch.run(engine)
+
+            for s in result.get("steps", []):
+                name = s.get("name", "?")
+                elapsed = s.get("elapsed_s", 0)
+                if "data_agent" in name:
+                    st.write(f"✅ 数据审计完成 ({elapsed:.1f}s)")
+                elif "model_agent" in name:
+                    mr = s.get("result", {})
+                    st.write(f"✅ 模型预测完成 ({elapsed:.1f}s) — {mr.get('prediction_quarter','?')}: {mr.get('prediction_value',0):.1f}%")
+                elif "analyst_agent" in name:
+                    st.write(f"✅ 简报生成完成 ({elapsed:.1f}s)")
+                elif "critic" in name:
+                    rev = s.get("review", {})
+                    passed = rev.get("passed", False)
+                    icon = "✅" if passed else "⚠️"
+                    st.write(f"{icon} 审阅完成 ({elapsed:.1f}s) — {'通过' if passed else '存在 ' + str(len(rev.get('issues',[]))) + ' 个问题'}")
+                else:
+                    st.write(f"⏳ {name} ({elapsed:.1f}s)")
+
+            status_box.update(label=f"流水线完成 — 状态: {result.get('status','?')}", state="complete")
+
+        final_status = result.get("status", "?")
+        if final_status in ("passed_review", "failed_review", "unreviewed"):
+            st.markdown("### 简报")
+            st.markdown(result.get("briefing", "无内容"))
+
+            review = result.get("review", {})
+            st.markdown("### 审阅结论")
+            summary = review.get("summary", "无")
+            if isinstance(summary, dict):
+                st.json(summary)
+            else:
+                st.write(summary)
+            if review.get("issues"):
+                issues_df = pd.DataFrame(review["issues"])
+                st.dataframe(issues_df, use_container_width=True, hide_index=True)
+
+            usage = result.get("token_usage", {})
+            st.caption(f"Token: {usage.get('total_tokens',0)} | 费用: ¥{usage.get('est_cost_cny',0):.4f} | 重写: {result.get('rewrite_rounds',0)}轮")
+
+            # Download button
+            st.download_button("⬇ 下载简报 (.md)", result.get("briefing", ""),
+                               file_name=f"briefing_{pd.Timestamp.now().strftime('%Y%m%d')}.md")
+        else:
+            st.error(f"流水线状态异常: {final_status}")
+
+    # Show historical briefings
+    st.markdown("---")
+    st.markdown("### 历史简报")
+    briefings_dir = Path("artifacts/briefings")
+    if briefings_dir.exists():
+        files = sorted(briefings_dir.glob("briefing_*.md"), reverse=True)
+        if files:
+            selected = st.selectbox("选择历史简报", [f.name for f in files])
+            if selected:
+                content = (briefings_dir / selected).read_text(encoding="utf-8")
+                st.markdown(content)
+        else:
+            st.info("暂无历史简报")
+    else:
+        st.info("暂无历史简报")
+
+
+def render_briefing_page(data: Dict[str, Any]) -> None:
+    """AI 简报页：简化版一键生成。"""
+    render_section("AI Briefing", "AI 经济简报生成", "基于最新数据自动生成四段式经济简报，经 AI 审阅后输出")
+
+    st.markdown(f'<div style="padding:0.5rem 1rem;background:{COLORS["bg_tertiary"]};border-radius:8px;font-size:0.85rem;color:{COLORS["text_secondary"]};">'
+                f'当前数据截至: {data.get("status",{}).get("dataset_mode","?")} 模式</div>',
+                unsafe_allow_html=True)
+    st.markdown("")
+
+    if st.button("🤖 生成简报", use_container_width=True, type="primary"):
+        with st.status("正在生成...", expanded=True) as s:
+            engine = data.get("engine") or load_engine()
+            from sc_macro_agent.agents import AgentOrchestrator
+            orch = AgentOrchestrator()
+            result = orch.run(engine)
+
+            for step in result.get("steps", []):
+                nm = step.get("name","?")
+                el = step.get("elapsed_s",0)
+                if "data" in nm: st.write(f"✅ 数据审计 ({el:.1f}s)")
+                elif "model" in nm: st.write(f"✅ 模型预测 ({el:.1f}s)")
+                elif "analyst" in nm: st.write(f"✅ 简报撰写 ({el:.1f}s)")
+                elif "critic" in nm:
+                    rv = step.get("review",{})
+                    st.write(f"{'✅' if rv.get('passed') else '⚠️'} 审阅 ({el:.1f}s)")
+            s.update(label="生成完成", state="complete")
+
+        st.markdown(result.get("briefing", ""))
+        rev = result.get("review", {})
+        if rev.get("issues"):
+            with st.expander(f"审阅发现 {len(rev['issues'])} 个问题"):
+                st.dataframe(pd.DataFrame(rev["issues"]), use_container_width=True, hide_index=True)
+        u = result.get("token_usage", {})
+        st.caption(f"Token: {u.get('total_tokens',0)} | 费用: ¥{u.get('est_cost_cny',0):.4f}")
+
+
+def render_rag_page(data: Dict[str, Any]) -> None:
+    """RAG 数据问答页。"""
+    render_section("Data Q&A", "AI 数据问答", "基于项目数据和模型产出的智能问答")
+
+    # Warning if no API key
+    import os
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        st.warning("⚠️ 未设置 DEEPSEEK_API_KEY，回答为 mock 降级模式。设置环境变量后重启以启用真实 AI 问答。")
+
+    from sc_macro_agent.rag_service import RAGService
+    rag = RAGService()
+
+    # Preset questions
+    st.markdown("**快捷提问：**")
+    presets = [
+        "2024年三季度四川GDP增速是多少",
+        "这个模型比基准好多少",
+        "数据有哪些已知局限",
+        "2026年一季度的预测是多少",
+    ]
+    cols = st.columns(4)
+    q = None
+    for i, preset in enumerate(presets):
+        if cols[i].button(preset, key=f"preset_{i}", use_container_width=True):
+            q = preset
+
+    # Chat input
+    user_q = st.chat_input("输入问题...")
+    if user_q:
+        q = user_q
+
+    if q:
+        with st.spinner("检索中..."):
+            result = rag.ask(q)
+        st.markdown(f"**问：** {q}")
+        st.markdown(f"**答：** {result['answer']}")
+        with st.expander("参考来源"):
+            for i, src in enumerate(result.get("sources", [])[:3]):
+                st.caption(f"[{i+1}] 相似度={src['score']:.3f} | {src['text'][:200]}")
+
+
+# ================================================================
+# main()
+# ================================================================
 def main() -> None:
     data = load_view_data(1)
     page, refresh = sidebar_controls(data)
@@ -1222,8 +1360,14 @@ def main() -> None:
         render_factors(data)
     elif "数据质量" in page:
         render_data_quality(data)
+    elif "Agent" in page:
+        render_agent_v2(data)
+    elif "AI 简报" in page:
+        render_briefing_page(data)
+    elif "数据问答" in page:
+        render_rag_page(data)
     else:
-        render_agent(data)
+        render_agent_v2(data)
 
 
 if __name__ == "__main__":

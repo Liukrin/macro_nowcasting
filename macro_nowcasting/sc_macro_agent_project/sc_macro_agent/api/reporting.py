@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-import pandas as pd
+from typing import Any, Dict, List
 
-from ..utils import json_dumps, pretty_quarter, save_json, save_text
+from ..utils import save_json, save_text
 
 
 class ReportBuilder:

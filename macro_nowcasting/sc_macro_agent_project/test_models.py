@@ -10,7 +10,6 @@ from sc_macro_agent import AppConfig, PredictionEngine
 
 
 class TestPredictionEngine(unittest.TestCase):
-    from pathlib import Path
 
     def setUp(self):
         self.config = AppConfig()

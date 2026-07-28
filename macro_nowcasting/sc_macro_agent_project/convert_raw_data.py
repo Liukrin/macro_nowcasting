@@ -63,6 +63,19 @@ def sf(val) -> float | None:
         return None
 
 
+def index_to_pct(v: float) -> float:
+    """Convert NBS index (上年=100) to growth rate, or pass through if already a pct.
+
+    NBS data sometimes switches index columns from 上年=100 format (e.g. 112.2)
+    to direct percentage format (e.g. 12.2) in later years. Values in the
+    reasonable growth-rate range (-50 to 50) are assumed to already be
+    percentages and returned unchanged.
+    """
+    if abs(v) < 50:
+        return v
+    return v - 100.0
+
+
 def convert_sichuan(df: pd.DataFrame):
     """Convert Sichuan Excel to quarterly_target + monthly_local."""
     print(f"  Processing Sichuan: {df.shape[0]} rows x {df.shape[1]} cols")
@@ -96,7 +109,7 @@ def convert_sichuan(df: pd.DataFrame):
                     v = sf(row.iloc[ci])
                     if v is not None:
                         if is_index and "增速" in name:
-                            v = v - 100.0  # index -> growth rate
+                            v = index_to_pct(v)
                         quarterly_rows.append({
                             "date": date, "region": "四川省",
                             "indicator_name": name, "indicator_value": v,
@@ -177,7 +190,7 @@ def convert_national(df: pd.DataFrame):
                     v = sf(row.iloc[ci])
                     if v is not None:
                         if is_index and "增速" in name:
-                            v = v - 100.0
+                            v = index_to_pct(v)
                     if v is not None:
                         quarterly_rows.append({
                             "date": date, "region": "全国",
@@ -297,14 +310,14 @@ def main():
     print("=" * 60)
 
     # 1. Read raw Excel
-    print("\n[1/5] Reading raw Excel files...")
+    print("\n[1/6] Reading raw Excel files...")
     sc_raw = pd.read_excel(DATA_DIR / "四川省数据202512.xlsx")
     nat_raw = pd.read_excel(DATA_DIR / "国家数据202512.xlsx", sheet_name=0)
     print(f"  Sichuan: {sc_raw.shape}")
     print(f"  National: {nat_raw.shape}")
 
     # 2. Convert to long format
-    print("\n[2/5] Converting to standardized long tables...")
+    print("\n[2/6] Converting to standardized long tables...")
     quarterly_target, monthly_local = convert_sichuan(sc_raw)
     national_q, national_m = convert_national(nat_raw)
 
@@ -314,7 +327,7 @@ def main():
     print(f"  national_monthly:      {len(national_m):5d} rows")
 
     # 3. Merge existing PMI data
-    print("\n[3/5] Merging existing PMI data...")
+    print("\n[3/6] Merging existing PMI data...")
     existing_csv = DATA_DIR / "monthly_national_features_real.csv"
     if existing_csv.exists():
         old = pd.read_csv(existing_csv)
@@ -324,13 +337,26 @@ def main():
     else:
         monthly_national = national_m
 
-    # 4. Build quarterly panel
-    print("\n[4/5] Building quarterly panel from monthly data...")
+    # 4. Merge scraped local data
+    print("\n[4/6] Merging scraped local data...")
+    scraped_csv = DATA_DIR / "monthly_local_scraped.csv"
+    if scraped_csv.exists():
+        scraped = pd.read_csv(scraped_csv)
+        scraped["date"] = pd.to_datetime(scraped["date"])
+        monthly_local["date"] = pd.to_datetime(monthly_local["date"])
+        monthly_local = pd.concat([monthly_local, scraped], ignore_index=True)
+        monthly_local = monthly_local.sort_values(["date", "indicator_name"]).reset_index(drop=True)
+        print(f"  Merged {len(scraped)} scraped rows")
+    else:
+        print("  No scraped data found, skipping")
+
+    # 5. Build quarterly panel
+    print("\n[5/6] Building quarterly panel from monthly data...")
     quarterly_panel = build_quarterly_panel(monthly_local, monthly_national)
     print(f"  quarterly_panel:       {len(quarterly_panel):5d} rows")
 
     # 5. Build metadata
-    print("\n[5/5] Generating metadata...")
+    print("\n[6/6] Generating metadata...")
     metadata = build_metadata(quarterly_target, monthly_local, monthly_national)
     print(f"  metadata:              {len(metadata):5d} rows")
 

@@ -13,12 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import pandas as pd
-import numpy as np
 
 from ..config import DataConfig
-from ..exceptions import DataNotReadyError, ArtifactError
+from ..exceptions import DataNotReadyError
 from ..logging_utils import get_logger
-from ..utils import ensure_datetime, infer_data_mode, quarter_end
+from ..utils import ensure_datetime, infer_data_mode
 
 
 @dataclass

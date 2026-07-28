@@ -11,7 +11,7 @@ wjm后面想接 OpenAI / 本地模型，
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class TSLMAdapter:

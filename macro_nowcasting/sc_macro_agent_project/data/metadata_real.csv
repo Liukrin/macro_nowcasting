@@ -12,6 +12,7 @@ PMI_生产,PMI_生产,PMI,monthly,False,False,False,True,high,converted from NBS
 房地产开发投资_同比增速,房地产开发投资_同比增速,投资,monthly,False,True,False,True,high,converted from NBS raw Excel
 房地产开发投资_累计值,房地产开发投资_累计值,投资,monthly,False,False,True,True,high,converted from NBS raw Excel
 社会消费品零售总额_同比增速,社会消费品零售总额_同比增速,消费,monthly,False,True,False,True,high,converted from NBS raw Excel
+社会消费品零售总额_当月值,社会消费品零售总额_当月值,消费,monthly,False,False,False,True,high,converted from NBS raw Excel
 社会消费品零售总额_累计值,社会消费品零售总额_累计值,消费,monthly,False,False,True,True,high,converted from NBS raw Excel
 第一产业增加值_同比增速,第一产业增加值_同比增速,产业,quarterly,False,True,False,True,high,converted from NBS raw Excel
 第一产业增加值_累计值,第一产业增加值_累计值,产业,quarterly,False,False,True,True,high,converted from NBS raw Excel

@@ -50,11 +50,6 @@ LONG_TABLE_NAME_MAP: Dict[str, str] = {
     "monthly_national_real": "monthly_national_features_real.csv",
     "quarterly_panel_real": "quarterly_feature_panel_real.csv",
     "metadata_real": "metadata_real.csv",
-    "quarterly_target_demo": "quarterly_target.csv",
-    "monthly_local_demo": "monthly_local_features.csv",
-    "monthly_national_demo": "monthly_national_features.csv",
-    "quarterly_panel_demo": "quarterly_feature_panel.csv",
-    "metadata_demo": "metadata.csv",
 }
 
 

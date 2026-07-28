@@ -12,9 +12,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -25,12 +23,12 @@ from .data.data_manager import DataManager, DataBundle
 from .data.data_quality import DataQualityAuditor
 from .features.feature_engineering import FeatureEngineer
 from .logging_utils import get_logger
-from .models.model_selection import ModelSelector, ModelFactory
+from .models.model_selection import ModelSelector
 from .models.backtesting import ExpandingWindowBacktester
 from .models.dfm_model import DFMModel
 from .api.reporting import ReportBuilder
 from .utils import metrics_dict, pretty_quarter, save_json, save_text
-from .exceptions import BacktestError, ModelTrainingError, FeatureBuildError, DataNotReadyError
+from .exceptions import BacktestError
 
 
 class PredictionEngine:
@@ -44,6 +42,8 @@ class PredictionEngine:
             n_factors=self.config.model.dfm_n_factors,
             standardize=self.config.features.standardize_before_pca,
         )
+        # Lazy-load chronos corrector on first predict
+        self._chronos_corrector: Any = None
         self.selector = ModelSelector(self.config.model)
         self.backtester = ExpandingWindowBacktester(self.config.backtest, self.config.model)
         self.report_builder = ReportBuilder()
@@ -60,6 +60,8 @@ class PredictionEngine:
         self.last_run_at: Optional[str] = None
         self.initialized = False
         self.warnings: List[str] = []
+        self._chronos_corrector: Any = None
+        self._chronos_state = "not_loaded"  # not_loaded | ready | failed
 
     # ------------------------------------------------------------------
     # 基础流程
@@ -103,10 +105,18 @@ class PredictionEngine:
         assert self.bundle is not None
         step = self.agent.start_step("build_features")
 
-        dfm_artifacts = self.dfm_model.fit_transform(
-            self.bundle.monthly_local,
-            self.bundle.monthly_national,
-        )
+        # DFM/PCA: 当使用白名单特征选择时跳过。
+        # 白名单不会选入 dfm_factor_* 列，PCA 在全样本上 fit 构成信息泄漏。
+        # 因此 policy 模式下直接断开 PCA 管道，避免将来误用。
+        if self.config.features.use_policy_selection:
+            dfm_artifacts = None
+            quarterly_factor_frame = None
+        else:
+            dfm_artifacts = self.dfm_model.fit_transform(
+                self.bundle.monthly_local,
+                self.bundle.monthly_national,
+            )
+            quarterly_factor_frame = dfm_artifacts.quarterly_factor_frame if dfm_artifacts else None
 
         feature_artifacts = self.feature_engineer.build_training_panel(
             quarterly_target_df=self.bundle.quarterly_target,
@@ -114,10 +124,11 @@ class PredictionEngine:
             monthly_national_df=self.bundle.monthly_national,
             quarterly_panel_df=self.bundle.quarterly_panel,
             metadata_df=self.bundle.metadata,
-            quarterly_factor_frame=dfm_artifacts.quarterly_factor_frame,
+            quarterly_factor_frame=quarterly_factor_frame,
         )
-        feature_artifacts.monthly_factor_frame = dfm_artifacts.monthly_factor_frame
-        feature_artifacts.quarterly_factor_frame = dfm_artifacts.quarterly_factor_frame
+        if dfm_artifacts is not None:
+            feature_artifacts.monthly_factor_frame = dfm_artifacts.monthly_factor_frame
+            feature_artifacts.quarterly_factor_frame = dfm_artifacts.quarterly_factor_frame
         self.feature_artifacts = feature_artifacts
 
         info = {
@@ -157,6 +168,14 @@ class PredictionEngine:
         panel = self.feature_artifacts.training_panel.copy()
         feature_cols = self.feature_artifacts.feature_columns
         target_col = self.feature_artifacts.target_column
+
+        # Delta parameterization: 将 level 目标转为差分序列用于训练
+        # 与冻结的 backtest 评估配置保持一致
+        if self.config.features.target_transform == "delta":
+            y_raw = panel[target_col].copy()
+            delta_y = y_raw.diff().iloc[1:]
+            panel = panel.iloc[1:].copy()
+            panel[target_col] = delta_y.values
 
         train_df, valid_df = self._train_valid_split(panel)
         X_train = train_df[feature_cols]
@@ -205,7 +224,7 @@ class PredictionEngine:
         step.close("completed", result)
         return result
 
-    def predict_next(self, use_blend: bool = True) -> Dict[str, Any]:
+    def predict_next(self) -> Dict[str, Any]:
         self.initialize()
         if self.feature_artifacts is None:
             self.build_features()
@@ -220,7 +239,36 @@ class PredictionEngine:
         current_quarter = pd.to_datetime(latest_row["quarter_end"].iloc[0])
         next_quarter = (current_quarter + pd.offsets.QuarterEnd()).to_pydatetime()
 
-        prediction_value = float(self.selected_model.predict(latest_row[feature_cols])[0])
+        # Raw model prediction (delta space if target_transform='delta')
+        raw_pred = float(self.selected_model.predict(latest_row[feature_cols])[0])
+
+        # Delta add-back: y_hat = y_{t-1} + delta_hat
+        if self.config.features.target_transform == "delta":
+            y_t_minus_1 = float(latest_row["target_value"].iloc[0])
+            prediction_value = y_t_minus_1 + raw_pred
+        else:
+            prediction_value = raw_pred
+
+        # Chronos residual correction (lazy load on first call)
+        chronos_correction = 0.0
+        if self._chronos_state == "not_loaded":
+            try:
+                from .chronos_adapter import ChronosResidualCorrector
+                self._chronos_corrector = ChronosResidualCorrector("amazon/chronos-bolt-tiny")
+                self._chronos_state = "ready" if not self._chronos_corrector.failed else "failed"
+            except Exception:
+                self._chronos_state = "failed"
+        if self._chronos_state == "ready" and self._chronos_corrector is not None:
+            try:
+                # Use training residuals as context
+                if hasattr(self.selected_model, "train_residuals_") and self.selected_model.train_residuals_ is not None:
+                    residuals = self.selected_model.train_residuals_
+                    e_hat, _ = self._chronos_corrector.correct(residuals)
+                    chronos_correction = float(e_hat)
+                    prediction_value += chronos_correction
+            except Exception:
+                pass
+
         result = {
             "target_indicator": self.config.features.target_indicator,
             "prediction_quarter": pretty_quarter(next_quarter),
@@ -230,6 +278,9 @@ class PredictionEngine:
             "benchmark_value": float(latest_row["target_value"].iloc[0]),
             "confidence_interval": self._build_confidence_interval(prediction_value),
             "top_features": self.selected_model.get_feature_importance(10),
+            "chronos_correction": chronos_correction,
+            "chronos_state": self._chronos_state,
+            "target_transform": self.config.features.target_transform,
             "notes": [
                 "prediction_generated_from_latest_available_quarter_features",
                 "if_real_data_is_short_treat_as_demo_nowcast_not_production_forecast",
@@ -243,21 +294,24 @@ class PredictionEngine:
                 "final_prediction": float(comp["final_prediction"][0]),
             }
         else:
-            result["components"] = {"prediction": prediction_value}
+            result["components"] = {"prediction": raw_pred}
 
         self.latest_prediction = result
         return result
 
-    def _build_confidence_interval(self, point_pred: float) -> Dict[str, float]:
+    def _build_confidence_interval(self, point_pred: float) -> Dict[str, Any]:
+        # 1.64 * backtest_RMSE ≈ 90% empirical interval
+        import numpy as np
+        backtest_rmse = 0.94  # default from frozen eval
         if self.backtest_result and self.backtest_result.get("metrics"):
-            rmse = float(self.backtest_result["metrics"].get("rmse", 0.8))
-        elif self.selected_model is not None and getattr(self.selected_model, "train_residuals_", None) is not None:
-            residuals = pd.Series(self.selected_model.train_residuals_)
-            rmse = float((residuals.pow(2).mean()) ** 0.5)
-        else:
-            rmse = 1.0
-        spread = max(0.3, 1.28 * rmse)
-        return {"lower": point_pred - spread, "upper": point_pred + spread}
+            backtest_rmse = float(self.backtest_result["metrics"].get("rmse", backtest_rmse))
+        spread = max(0.3, 1.64 * backtest_rmse)
+        return {
+            "lower": round(point_pred - spread, 2),
+            "upper": round(point_pred + spread, 2),
+            "method": "point ± 1.64 × backtest_RMSE (approx 90% empirical CI)",
+            "backtest_rmse": backtest_rmse,
+        }
 
     # ------------------------------------------------------------------
     # 汇总与导出

@@ -6,11 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
 import pandas as pd
-import numpy as np
-
 from .data_contracts import REQUIRED_LONG_COLUMNS, REQUIRED_METADATA_COLUMNS
-from ..exceptions import DataContractError
-from ..utils import quarter_end, json_dumps
+from ..utils import quarter_end
 
 
 @dataclass
@@ -143,10 +140,8 @@ class DataQualityAuditor:
         if monthly_df.empty or quarterly_df.empty:
             self._append("quarter_alignment", False, "monthly 或 quarterly 为空", "warning")
             return
-        m = monthly_df.copy()
-        m["quarter_end"] = quarter_end(m["date"])
-        q_quarters = set(pd.to_datetime(quarterly_df["date"], errors="coerce").dt.to_period("Q").dt.to_timestamp("Q").dropna())
-        m_quarters = set(pd.to_datetime(m["quarter_end"]).dropna())
+        m_quarters = set(pd.to_datetime(monthly_df["date"], errors="coerce").dt.to_period("Q").dropna())
+        q_quarters = set(pd.to_datetime(quarterly_df["date"], errors="coerce").dt.to_period("Q").dropna())
         overlap = len(q_quarters & m_quarters)
         self._append(
             "quarter_alignment",

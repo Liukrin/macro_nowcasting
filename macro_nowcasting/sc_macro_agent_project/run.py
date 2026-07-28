@@ -54,7 +54,9 @@ def main() -> None:
         engine.run_agent(goal="audit_build_train_predict", save_artifacts=False)
         result = engine.predict_next()
     elif args.command == "agent":
-        result = engine.run_agent(goal="audit_build_train_backtest_report", save_artifacts=True)
+        from sc_macro_agent.agents import AgentOrchestrator
+        orch = AgentOrchestrator()
+        result = orch.run(engine)
     else:
         engine.initialize()
         result = engine.get_status()

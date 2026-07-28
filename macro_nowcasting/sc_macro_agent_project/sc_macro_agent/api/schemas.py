@@ -36,7 +36,6 @@ class DataAvailabilityResponse(BaseModel):
 class PredictionRequest(BaseModel):
     target_indicator: str = Field(default="GDP_同比增速")
     horizon: int = Field(default=1, ge=1, le=4)
-    use_blend: bool = True
     force_retrain: bool = False
 
 

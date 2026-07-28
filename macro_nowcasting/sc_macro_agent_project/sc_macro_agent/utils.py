@@ -249,6 +249,38 @@ def sorted_unique(values: Sequence[Any]) -> List[Any]:
     return sorted(pd.Series(list(values)).dropna().unique().tolist())
 
 
+def decumulate_ytd(cum_value_series: pd.Series) -> pd.Series:
+    """\n    从累计值序列反推单季值，再计算单季同比。\n\n    方法：累计值差分法。\n      单季值_Q1 = 累计值_Q1\n      单季值_Qn = 累计值_Qn - 累计值_Q(n-1)\n      单季同比_t = 单季值_t / 单季值_{t-4} - 1\n\n    注意：基于名义累计值差分，得到名义增速，与统计局不变价实际增速\n    存在系统性偏差，仅用于模型评估的相对比较。\n\n    Args:\n        cum_value_series: 按时间排序的累计值序列（如 GDP 累计值，亿元）。\n            Index 为日期，含 quarter 属性。\n\n    Returns:\n        单季同比序列（%），缺失季度为 NaN。\n    """
+    result = pd.Series(np.nan, index=cum_value_series.index, dtype=float)
+    if not hasattr(cum_value_series.index, 'quarter'):
+        return result
+
+    # Step 1: Decumulate to single-quarter values
+    single_q = pd.Series(np.nan, index=cum_value_series.index, dtype=float)
+    for i, idx in enumerate(cum_value_series.index):
+        val = cum_value_series.iloc[i]
+        if pd.isna(val):
+            continue
+        q = idx.quarter
+        if q == 1:
+            single_q.iloc[i] = float(val)
+        else:
+            # Q2-Q4: current cumulative - previous quarter cumulative
+            if i >= 1 and not pd.isna(cum_value_series.iloc[i-1]):
+                single_q.iloc[i] = float(val) - float(cum_value_series.iloc[i-1])
+
+    # Step 2: Compute single-quarter YoY = single_q_t / single_q_{t-4} - 1
+    for i, idx in enumerate(cum_value_series.index):
+        if i < 4 or pd.isna(single_q.iloc[i]):
+            continue
+        sq_prev = single_q.iloc[i-4]
+        sq_curr = single_q.iloc[i]
+        if pd.notna(sq_prev) and pd.notna(sq_curr) and abs(sq_prev) > 1e-8:
+            result.iloc[i] = (sq_curr / sq_prev - 1.0) * 100.0
+
+    return result
+
+
 class Diagnostics:
     def feature_target_correlations(self, panel: pd.DataFrame, target_col: str = "target_value", top_n: int = 20) -> List[Dict[str, Any]]:
         if panel.empty or target_col not in panel.columns:

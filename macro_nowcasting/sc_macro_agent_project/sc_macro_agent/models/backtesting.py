@@ -56,9 +56,13 @@ class ExpandingWindowBacktester:
         max_windows = self.bt_config.max_test_windows
         start_idx = self.bt_config.initial_train_quarters
 
-        for i in range(start_idx, len(quarters), self.bt_config.step):
-            if len(windows) >= max_windows:
-                break
+        # 先收集所有可用的测试季度索引，再取尾部 max_windows 个，
+        # 确保回测覆盖到最近季度而非最早季度。
+        all_test_indices = list(range(start_idx, len(quarters), self.bt_config.step))
+        if len(all_test_indices) > max_windows:
+            all_test_indices = all_test_indices[-max_windows:]
+
+        for i in all_test_indices:
             test_quarter = quarters[i]
             train_quarters = quarters[:i]
             train_df = panel[panel["quarter_end"].isin(train_quarters)].copy()
@@ -73,7 +77,7 @@ class ExpandingWindowBacktester:
 
             model_name = selected_model_name or self.model_config.primary_model
             if model_name == "auto":
-                model_name = "hybrid_residual"
+                model_name = self.model_config.candidate_models[-1] if self.model_config.candidate_models else "hybrid_residual"
             model = self.factory.create(model_name)
             model.fit(X_train, y_train)
 
@@ -106,6 +110,13 @@ class ExpandingWindowBacktester:
 
         window_df = pd.DataFrame([w.as_dict() for w in windows])
         metrics = metrics_dict(window_df["actual"], window_df["prediction"])
+        # 方向准确率：预测的同比增速变化方向（相比上期）与实际一致的比例
+        actual_diff = window_df["actual"].diff().iloc[1:]
+        pred_diff = window_df["prediction"].diff().iloc[1:]
+        direction_correct = int(((actual_diff > 0) == (pred_diff > 0)).sum())
+        direction_total = int(len(actual_diff))
+        metrics["direction_accuracy"] = direction_correct / max(direction_total, 1)
+        metrics["direction_pairs"] = direction_total
         return {
             "n_windows": int(len(windows)),
             "metrics": metrics,

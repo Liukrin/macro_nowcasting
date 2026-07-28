@@ -22,10 +22,10 @@ class GeneratorConfig:
     province: str = "四川省"
 
     def monthly_dates(self) -> pd.DatetimeIndex:
-        return pd.date_range(self.start_date, self.end_date, freq="M")
+        return pd.date_range(self.start_date, self.end_date, freq="ME")
 
     def quarterly_dates(self) -> pd.DatetimeIndex:
-        return pd.date_range(self.start_date, self.end_date, freq="Q")
+        return pd.date_range(self.start_date, self.end_date, freq="QE")
 
 
 class MacroDataGenerator:
@@ -57,7 +57,8 @@ class MacroDataGenerator:
             "PMI_PMI": 50 + 1.6 * cycles["production"] + 1.1 * cycles["demand"] + noise(0.35),
             "PMI_生产": 50 + 1.8 * cycles["production"] + noise(0.35),
             "PMI_新订单": 50 + 1.6 * cycles["demand"] + noise(0.35),
-            "规模以上工业增加值_同比增速": 5 + 1.8 * cycles["production"] + noise(0.5),
+            # 全国月度指标名对齐 real 数据（国家数据202512.xlsx 转换结果）
+            "工业增加值_同比增速": 5 + 1.8 * cycles["production"] + noise(0.5),
             "固定资产投资（不含农户）_同比增速": 4.5 + 1.5 * cycles["finance"] + 0.8 * cycles["production"] + noise(0.6),
             "社会消费品零售总额_同比增速": 4.2 + 1.7 * cycles["demand"] + noise(0.5),
             "CPI_同比": 1.5 + 0.8 * cycles["price"] + noise(0.2),
@@ -90,6 +91,7 @@ class MacroDataGenerator:
         cycles = self._base_cycles(n)
         noise = lambda scale: self.rng.normal(0, scale, n)
 
+        # 四川月度指标名对齐 real 数据（四川省数据202512.xlsx 转换结果）
         values = {
             "规模以上工业增加值_同比增速": 5.2 + 1.9 * cycles["production"] + noise(0.45),
             "固定资产投资（不含农户）_同比增速": 5.0 + 1.8 * cycles["finance"] + 0.5 * cycles["production"] + noise(0.55),

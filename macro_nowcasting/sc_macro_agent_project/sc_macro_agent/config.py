@@ -7,7 +7,7 @@ import json
 import os
 
 
-@dataclass   # 规格说明书，物料清单
+@dataclass
 class DataConfig:
     data_dir: str = "./data"
     dataset_mode: str = "auto"   # auto / real / demo / hybrid
@@ -27,20 +27,20 @@ class DataConfig:
 
     allow_demo_fallback: bool = True
     merge_demo_for_backtest: bool = False
-    cache_intermediate: bool = True # 中间结果要缓存（省得重复计算）
+    cache_intermediate: bool = True
     artifact_dir: str = "./artifacts"
 
     def resolve_dir(self) -> Path:
         # 定位到 sc_macro_agent_project 目录（config.py 的上级目录）
         base_dir = Path(__file__).parent.parent
-        return (base_dir / self.data_dir).expanduser().resolve() # 这里是为了代码的可移植性,相对变绝对，波浪号展开，跨平台兼容
+        return (base_dir / self.data_dir).expanduser().resolve()
 
     def resolve_artifact_dir(self) -> Path:
         path = Path(self.artifact_dir).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True) # 智能模式：柜子没有？先建柜子！再建抽屉！文件夹已有？没事， quietly pass~ 缺就建，有就用
+        path.mkdir(parents=True, exist_ok=True) 
         return path
 
-    def as_dict(self) -> Dict[str, Any]: # 字典是所有程序都能听懂的话，更方便把配置保存为JSON，或者穿传给网页界面显示
+    def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
@@ -53,7 +53,7 @@ class FeatureConfig:
     max_feature_missing_ratio: float = 0.65
     min_non_na_observations: int = 3
     winsorize_quantile: float = 0.01
-    use_quarterly_panel_if_available: bool = True
+    use_quarterly_panel_if_available: bool = False  # 旧面板已替换为月度数据+自聚合
 
     # 特征工程开关（一长串True/False）
     build_monthly_aggregations: bool = True
@@ -69,7 +69,7 @@ class FeatureConfig:
 
     # 时间特征,field--独立性而不互相干扰
     add_target_lags: bool = True
-    target_lags: List[int] = field(default_factory=lambda: [1, 2, 4])
+    target_lags: List[int] = field(default_factory=lambda: [1, 4])  # lag1 + lag4 only (per 1.2)
     add_target_rolling: bool = True
     target_roll_windows: List[int] = field(default_factory=lambda: [2, 4])
     add_feature_lags: bool = True
@@ -89,8 +89,20 @@ class FeatureConfig:
     interaction_top_pairs: int = 8
     small_sample_feature_cap: int = 40
 
-    def as_dict(self) -> Dict[str, Any]:  # 数据交换的通用语言
-        return asdict(self) # #
+    # 白名单特征选择（替代方差排序）
+    use_policy_selection: bool = True
+    policy_max_features: int = 16
+    policy_agg_methods: List[str] = field(default_factory=lambda: ["last", "mean"])
+
+    # 目标变量口径
+    target_mode: str = "ytd"  # "ytd" = 累计同比 / "qoq_yoy" = 单季同比（已弃用，vintage断点）
+    # 目标变换："level" = 直接预测 y_t / "delta" = 预测 Δy_t = y_t - y_{t-1}
+    target_transform: str = "delta"  # "delta" = 差分预测（匹配冻结backtest配置）
+    # 发布时滞
+    feature_vintage: str = "full_quarter"
+
+    def as_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -116,10 +128,10 @@ class ModelConfig:
     ridge_alphas: List[float] = field(default_factory=lambda: [0.01, 0.1, 1.0, 10.0, 100.0])
     elastic_alphas: List[float] = field(default_factory=lambda: [0.001, 0.01, 0.1, 1.0])
     elastic_l1_ratios: List[float] = field(default_factory=lambda: [0.1, 0.3, 0.5, 0.7, 0.9])
-    residual_model_kind: str = "rf"
 
 
     # 控制"树模型"结构的超参数
+    residual_model_kind: str = "rf"
     residual_n_estimators: int = 200
     residual_max_depth: int = 3
     residual_min_samples_leaf: int = 2
@@ -131,6 +143,7 @@ class ModelConfig:
     min_train_rows_for_hybrid: int = 12
     min_train_rows_for_regularized: int = 8
 
+    # DFM和模型融合
     use_dfm_features: bool = True
     dfm_n_factors: int = 3
     dfm_regress_target: bool = True
@@ -149,9 +162,9 @@ class BacktestConfig:
 
     # 窗口设置
     scheme: str = "expanding"
-    initial_train_quarters: int = 4
+    initial_train_quarters: int = 24
     min_required_test_windows: int = 2
-    max_test_windows: int = 8
+    max_test_windows: int = 32
 
     # 预测设置
     horizon: int = 1
