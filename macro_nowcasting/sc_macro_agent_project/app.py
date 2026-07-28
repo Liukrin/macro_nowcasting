@@ -318,22 +318,43 @@ def render_warning_pills(items: Iterable[str]) -> None:
 def load_engine() -> PredictionEngine:
     config = AppConfig.from_env()
     engine = PredictionEngine(config=config)
-    engine.run_agent(goal="audit_build_train_backtest_report", save_artifacts=False)
+    try:
+        engine.run_agent(goal="audit_build_train_backtest_report", save_artifacts=False)
+    except Exception as e:
+        import sys
+        print(f"[WARN] Pipeline init failed: {e}", file=sys.stderr)
+        engine._init_error = str(e)
     return engine
 
 
 @st.cache_data(show_spinner=False)
 def load_view_data(_: int) -> Dict[str, Any]:
     engine = load_engine()
-    status = engine.get_status()
-    summary = engine.summarize()
-    prediction = summary.get("prediction") or engine.predict_next()
-    audit_result = engine.audit_result or {}
-    backtest = engine.backtest_result or {}
+    try:
+        status = engine.get_status()
+        summary = engine.summarize()
+    except Exception:
+        status = {"phase": "init_error", "completed": False}
+        summary = {}
+    try:
+        prediction = summary.get("prediction") or engine.predict_next()
+    except Exception:
+        prediction = None
+    audit_result = getattr(engine, "audit_result", None) or {}
+    backtest = getattr(engine, "backtest_result", None) or {}
     factor_summary = engine.get_factor_summary() if hasattr(engine, "get_factor_summary") else {}
-    snapshot = engine.data_manager.get_latest_snapshot()
-    availability = engine.data_manager.get_data_availability()
-    signal_overview = engine.data_manager.build_training_signal_overview()
+    try:
+        snapshot = engine.data_manager.get_latest_snapshot()
+    except Exception:
+        snapshot = None
+    try:
+        availability = engine.data_manager.get_data_availability()
+    except Exception:
+        availability = {"items": []}
+    try:
+        signal_overview = engine.data_manager.build_training_signal_overview()
+    except Exception:
+        signal_overview = {}
     leaderboard_df = safe_df(summary.get("leaderboard", []))
     top_features_df = safe_df(summary.get("top_features", []))
     agent_steps_df = safe_df(summary.get("agent", {}).get("steps", []))
@@ -342,12 +363,18 @@ def load_view_data(_: int) -> Dict[str, Any]:
     items_df = safe_df(availability.get("items", []))
     summary_df = safe_df(audit_result.get("summary", []))
 
-    registry = engine.feature_artifacts.feature_registry if engine.feature_artifacts is not None else None
+    try:
+        registry = engine.feature_artifacts.feature_registry if engine.feature_artifacts is not None else None
+    except Exception:
+        registry = None
     family_df = pd.DataFrame(columns=["family", "count"])
     region_df = pd.DataFrame(columns=["region", "count"])
     if registry is not None:
-        family_df = pd.DataFrame(list(registry.summary_by_family().items()), columns=["family", "count"])
-        region_df = pd.DataFrame(list(registry.summary_by_region().items()), columns=["region", "count"])
+        try:
+            family_df = pd.DataFrame(list(registry.summary_by_family().items()), columns=["family", "count"])
+            region_df = pd.DataFrame(list(registry.summary_by_region().items()), columns=["region", "count"])
+        except Exception:
+            pass
 
     return {
         "engine": engine,
@@ -1371,6 +1398,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        import traceback
+        st.error(f"应用启动失败: {exc}")
+        st.code(traceback.format_exc())
 
 # streamlit run "D:\PythonProject\macro_nowcasting\sc_macro_agent_project\app.py" --server.port 8501
