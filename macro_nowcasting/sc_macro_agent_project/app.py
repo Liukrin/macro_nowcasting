@@ -333,10 +333,16 @@ def render_warning_pills(items: Iterable[str]) -> None:
 
 @st.cache_resource(show_spinner=False)
 def load_engine() -> PredictionEngine:
+    import os
     config = AppConfig.from_env()
     engine = PredictionEngine(config=config)
+    # Cloud 环境默认轻量模式：只审计数据+构建特征，跳过训练和回测（资源不足）
+    # 本地设置 SC_MACRO_FULL_PIPELINE=true 启用完整流水线
+    goal = "audit_build"
+    if os.environ.get("SC_MACRO_FULL_PIPELINE", "").lower() == "true":
+        goal = "audit_build_train_backtest_report"
     try:
-        engine.run_agent(goal="audit_build_train_backtest_report", save_artifacts=False)
+        engine.run_agent(goal=goal, save_artifacts=False)
     except Exception as e:
         import sys
         print(f"[WARN] Pipeline init failed: {e}", file=sys.stderr)
