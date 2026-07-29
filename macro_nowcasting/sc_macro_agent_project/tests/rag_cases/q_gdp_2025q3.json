@@ -1,0 +1,8 @@
+{
+  "case_id": "q_gdp_2025q3",
+  "description": "指定季度GDP查询——有时间+指标约束，应精确命中",
+  "question": "2025年第三季度四川省GDP累计同比增速是多少？",
+  "expect_has_answer": true,
+  "expect_top1_contains": "2025年第3季度",
+  "tier": "lexical"
+}

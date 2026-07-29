@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..agent import ForecastAgent
 from ..config import AppConfig
@@ -25,13 +25,14 @@ class AgentOrchestrator:
 
     MAX_REWRITES = 2
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[AppConfig] = None) -> None:
+        cfg = config or AppConfig()
         self.logger = get_logger("sc_macro_agent.orchestrator")
-        self.llm = LLMClient()
-        self.agent = ForecastAgent(AppConfig().agent)
+        self.llm = LLMClient.get_instance()
+        self.agent = ForecastAgent(cfg.agent)
         self.data_agent = DataAgent()
-        self.model_agent = ModelAgent()
-        self.analyst_agent = AnalystAgent()
+        self.model_agent = ModelAgent(cfg)
+        self.analyst_agent = AnalystAgent(cfg)
         self.critic_agent = CriticAgent()
 
     def run(self, engine: PredictionEngine) -> Dict[str, Any]:

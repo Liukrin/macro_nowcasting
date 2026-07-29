@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ..config import AppConfig
 from ..llm.briefing import BriefingGenerator
 from ..prediction_engine import PredictionEngine
 
 
 class AnalystAgent:
-    def __init__(self) -> None:
-        self.generator = BriefingGenerator()
+    def __init__(self, config: AppConfig) -> None:
+        self.generator = BriefingGenerator(config)
 
     def run(self, engine: PredictionEngine, critic_feedback: Optional[list] = None) -> Dict[str, Any]:
         inputs = self.generator.build_inputs(engine)
@@ -27,14 +28,14 @@ class AnalystAgent:
             f"- [{i['type']}] {i['quote']} → {i['suggestion']}"
             for i in issues if isinstance(i, dict)
         )
-        prompt = (
-            f"以下是原始简报，存在以下问题需要修正：\n\n{feedback_text}\n\n"
-            f"原始简报：\n{original}\n\n"
-            f"请修正上述问题后重新输出完整简报。保持四段结构。"
+        from ..prompts.registry import render
+        prompt = render("analyst_rewrite",
+            feedback_text=feedback_text,
+            original=original,
         )
         return self.generator.llm.chat(
-            system="你是经济简报编辑。根据审阅意见修正简报，只输出修正后的全文。",
-            user=prompt,
-            temperature=0.2,
-            max_tokens=2000,
+            prompt["system"], prompt["user"],
+            temperature=prompt["temperature"], max_tokens=prompt["max_tokens"],
+            prompt_id=prompt["id"], prompt_version=prompt["version"],
+            caller="analyst_rewrite",
         )

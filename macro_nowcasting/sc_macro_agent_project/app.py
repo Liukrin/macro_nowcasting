@@ -336,6 +336,8 @@ def load_engine() -> PredictionEngine:
     import os
     config = AppConfig.from_env()
     engine = PredictionEngine(config=config)
+    from sc_macro_agent.llm.client import LLMClient
+    LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
     # Cloud 环境默认轻量模式：只审计数据+构建特征，跳过训练和回测（资源不足）
     # 本地设置 SC_MACRO_FULL_PIPELINE=true 启用完整流水线
     goal = "audit_build"
@@ -813,7 +815,7 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
     page = st.sidebar.radio(
         "导航",
         ["🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析", "🧪 数据质量",
-         "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答"],
+         "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答", "📊 LLM 追踪"],
         label_visibility="collapsed",
     )
 
@@ -1151,7 +1153,7 @@ def render_factors(data: Dict[str, Any]) -> None:
         feats = engine.feature_artifacts.feature_columns
         st.caption(f"当前特征集（{engine.config.features.target_transform} 模式）: {len(feats)} 个特征")
         import json
-        fl_path = Path("artifacts/final/feature_list.json")
+        fl_path = engine.config.data.resolve_artifact_dir(create=False) / "final" / "feature_list.json"
         if fl_path.exists():
             with open(fl_path, encoding="utf-8") as f:
                 fl = json.load(f)
@@ -1241,9 +1243,9 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
 
     if st.button("▶ 启动 Agent 流水线", use_container_width=True):
         with st.status("Agent 流水线运行中...", expanded=True) as status_box:
-            engine = data.get("engine") or load_engine()
+            engine = load_engine()
             from sc_macro_agent.agents import AgentOrchestrator
-            orch = AgentOrchestrator()
+            orch = AgentOrchestrator(config=engine.config)
             result = orch.run(engine)
 
             for s in result.get("steps", []):
@@ -1294,7 +1296,7 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
     # Show historical briefings
     st.markdown("---")
     st.markdown("### 历史简报")
-    briefings_dir = Path("artifacts/briefings")
+    briefings_dir = load_engine().config.data.resolve_artifact_dir(create=False) / "briefings"
     if briefings_dir.exists():
         files = sorted(briefings_dir.glob("briefing_*.md"), reverse=True)
         if files:
@@ -1319,9 +1321,9 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
 
     if st.button("🤖 生成简报", use_container_width=True, type="primary"):
         with st.status("正在生成...", expanded=True) as s:
-            engine = data.get("engine") or load_engine()
+            engine = load_engine()
             from sc_macro_agent.agents import AgentOrchestrator
-            orch = AgentOrchestrator()
+            orch = AgentOrchestrator(config=engine.config)
             result = orch.run(engine)
 
             for step in result.get("steps", []):
@@ -1354,7 +1356,7 @@ def render_rag_page(data: Dict[str, Any]) -> None:
         st.warning("⚠️ 未设置 DEEPSEEK_API_KEY，回答为 mock 降级模式。设置环境变量后重启以启用真实 AI 问答。")
 
     from sc_macro_agent.rag_service import RAGService
-    rag = RAGService()
+    rag = RAGService(config=load_engine().config)
 
     # Preset questions
     st.markdown("**快捷提问：**")
@@ -1386,6 +1388,292 @@ def render_rag_page(data: Dict[str, Any]) -> None:
 
 
 # ================================================================
+# LLM Trace 页面
+# ================================================================
+
+# 价格常量（与 llm/client.py 一致，2026-07核对）
+_TRACE_PROMPT_PRICE_PER_1K = 0.001       # CNY / 1K input tokens (cache miss)
+_TRACE_COMPLETION_PRICE_PER_1K = 0.002   # CNY / 1K output tokens
+_TRACE_CACHE_HIT_RATIO = 1.0 / 50         # 缓存命中输入约为未命中的 1/50
+
+
+def _trace_cost(prompt_tokens: int, completion_tokens: int, cache_hit_tokens: int) -> float:
+    """单条 trace 成本估算。cached_tokens 是 prompt_tokens 的子集。"""
+    miss = prompt_tokens - cache_hit_tokens
+    return (
+        miss * _TRACE_PROMPT_PRICE_PER_1K / 1000
+        + cache_hit_tokens * _TRACE_PROMPT_PRICE_PER_1K * _TRACE_CACHE_HIT_RATIO / 1000
+        + completion_tokens * _TRACE_COMPLETION_PRICE_PER_1K / 1000
+    )
+
+
+def _fmt_latency(ms: float) -> str:
+    if ms >= 1000:
+        return f"{ms / 1000:.1f}s"
+    return f"{ms:.0f}ms"
+
+
+def render_llm_traces(_data: Dict[str, Any]) -> None:
+    from sc_macro_agent.llm.client import LLMClient
+
+    client = LLMClient.get_instance()
+    traces_dir = client.traces_dir
+
+    render_section("LLM Traces", "LLM 调用追踪", "每次 API 调用的完整记录：系统提示词、用户输入、响应内容、Token 消耗")
+
+    # --- 状态条 ---
+    if client.is_mock:
+        st.markdown(
+            f"""<div style="padding:0.6rem 1rem; background:{COLORS['bg_secondary']};
+            border:1px solid {COLORS['accent_amber']}; border-radius:8px;
+            color:{COLORS['accent_amber']}; font-weight:600;">
+            ⚠️ LLM 处于 MOCK 降级模式 —— 所有响应均为占位文本，非真实模型输出
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"""<div style="padding:0.6rem 1rem; background:{COLORS['bg_secondary']};
+            border:1px solid {COLORS['accent_green']}; border-radius:8px;
+            color:{COLORS['accent_green']}; font-weight:600;">
+            ✅ LLM 在线 — deepseek-v4-flash
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
+
+    # --- 日期选择 ---
+    date_files: list[str] = []
+    if traces_dir.exists():
+        for fp in sorted(traces_dir.glob("*.jsonl"), reverse=True):
+            date_files.append(fp.stem)  # YYYY-MM-DD
+    else:
+        date_files = []
+
+    if not date_files:
+        st.info("暂无 LLM 调用记录。运行一次 Agent 流水线后数据将在此显示。")
+        return
+
+    selected_date = st.selectbox("选择日期", date_files, key="trace_date")
+    trace_path = traces_dir / f"{selected_date}.jsonl"
+    if not trace_path.exists():
+        st.info("该日期暂无调用记录。")
+        return
+
+    # 加载全部记录
+    raw_lines: list[str] = []
+    with open(trace_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                raw_lines.append(line)
+    if not raw_lines:
+        st.info("该日期暂无调用记录。")
+        return
+
+    import json
+    traces: list[dict] = []
+    for line in raw_lines:
+        try:
+            traces.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    if not traces:
+        st.info("该日期暂无有效调用记录。")
+        return
+
+    # --- 聚合统计 ---
+    total_calls = len(traces)
+    total_prompt = sum(t.get("prompt_tokens", 0) or 0 for t in traces)
+    total_completion = sum(t.get("completion_tokens", 0) or 0 for t in traces)
+    total_cached = sum(t.get("cache_hit_tokens", 0) or 0 for t in traces)
+    total_tokens = total_prompt + total_completion
+    total_cost = sum(
+        _trace_cost(
+            t.get("prompt_tokens", 0) or 0,
+            t.get("completion_tokens", 0) or 0,
+            t.get("cache_hit_tokens", 0) or 0,
+        )
+        for t in traces
+    )
+    # 平均延迟只统计成功的真实调用
+    real_traces = [t for t in traces if not t.get("is_mock") and not t.get("error")]
+    if real_traces:
+        avg_latency_ms = sum(t.get("latency_ms", 0) or 0 for t in real_traces) / len(real_traces)
+    else:
+        avg_latency_ms = 0.0
+
+    cache_hit_rate = (total_cached / total_prompt * 100) if total_prompt > 0 else 0.0
+
+    # --- KPI 四卡片 ---
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(
+            f"""
+            <div class="kpi-card accent-left">
+                <div class="label">总调用数</div>
+                <div class="value">{total_calls}</div>
+                <div class="meta">选中日期: {selected_date}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f"""
+            <div class="kpi-card accent-purple">
+                <div class="label">总 Token</div>
+                <div class="value">{total_tokens:,}</div>
+                <div class="meta">prompt {total_prompt:,} + completion {total_completion:,}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            f"""
+            <div class="kpi-card accent-green">
+                <div class="label">估算成本</div>
+                <div class="value">¥{total_cost:.6f}</div>
+                <div class="meta">缓存命中率 {cache_hit_rate:.1f}%（分母: prompt_tokens）</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c4:
+        st.markdown(
+            f"""
+            <div class="kpi-card accent-left">
+                <div class="label">平均延迟</div>
+                <div class="value">{_fmt_latency(avg_latency_ms)}</div>
+                <div class="meta">仅统计 {len(real_traces)}/{total_calls} 次成功真实调用</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
+
+    # --- 按 caller 堆叠柱状图 ---
+    from collections import defaultdict
+    caller_tokens: dict[str, dict[str, int]] = defaultdict(lambda: {"prompt": 0, "completion": 0})
+    for t in traces:
+        c = t.get("caller", "unknown") or "unknown"
+        caller_tokens[c]["prompt"] += t.get("prompt_tokens", 0) or 0
+        caller_tokens[c]["completion"] += t.get("completion_tokens", 0) or 0
+
+    if caller_tokens:
+        callers = sorted(caller_tokens.keys())
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=callers,
+            y=[caller_tokens[c]["prompt"] for c in callers],
+            name="prompt",
+            marker_color=COLORS["accent_cyan"],
+            hovertemplate="prompt: %{y:,}<extra></extra>",
+        ))
+        fig.add_trace(go.Bar(
+            x=callers,
+            y=[caller_tokens[c]["completion"] for c in callers],
+            name="completion",
+            marker_color=COLORS["accent_purple"],
+            hovertemplate="completion: %{y:,}<extra></extra>",
+        ))
+        fig.update_layout(
+            barmode="stack",
+            height=300,
+            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis_title="",
+            yaxis_title="Token",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center"),
+        )
+        fig = apply_base_style(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.info("无调用数据可图表化。")
+
+    # --- 提示词版本表 ---
+    st.markdown(f'<div style="font-size:0.85rem; text-transform:uppercase; letter-spacing:0.08em; color:{COLORS["text_muted"]}; margin-top:1.5rem; margin-bottom:0.5rem; font-weight:600;">提示词版本</div>', unsafe_allow_html=True)
+
+    from collections import Counter
+    pv_groups: dict[tuple, list[dict]] = defaultdict(list)
+    for t in traces:
+        key = (t.get("prompt_id", "?") or "?", t.get("prompt_version", "?") or "?")
+        pv_groups[key].append(t)
+
+    version_rows = []
+    for (pid, ver), items in pv_groups.items():
+        calls = len(items)
+        total_tok = sum((it.get("prompt_tokens", 0) or 0) + (it.get("completion_tokens", 0) or 0) for it in items)
+        err_count = sum(1 for it in items if it.get("error"))
+        mock_count = sum(1 for it in items if it.get("is_mock"))
+        real_items = [it for it in items if not it.get("is_mock") and not it.get("error")]
+        avg_ms = sum(it.get("latency_ms", 0) or 0 for it in real_items) / max(len(real_items), 1)
+        version_rows.append({
+            "prompt_id": pid,
+            "version": ver,
+            "调用次数": calls,
+            "平均 token": round(total_tok / max(calls, 1)),
+            "平均延迟": _fmt_latency(avg_ms),
+            "mock 数": mock_count,
+            "错误数": err_count,
+        })
+
+    if version_rows:
+        version_rows.sort(key=lambda r: r["调用次数"], reverse=True)
+        st.dataframe(pd.DataFrame(version_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("无版本数据。")
+
+    # --- 明细表格 ---
+    st.markdown(f'<div style="font-size:0.85rem; text-transform:uppercase; letter-spacing:0.08em; color:{COLORS["text_muted"]}; margin-top:1.5rem; margin-bottom:0.5rem; font-weight:600;">调用明细（共 {total_calls} 条）</div>', unsafe_allow_html=True)
+
+    detail_rows = []
+    for t in traces:
+        ts = t.get("timestamp", "") or ""
+        if "T" in str(ts):
+            time_str = str(ts).split("T")[1][:8]
+        else:
+            time_str = str(ts)[:8]
+        pt = t.get("prompt_tokens", 0) or 0
+        ct = t.get("completion_tokens", 0) or 0
+        is_err = bool(t.get("error"))
+        is_mk = bool(t.get("is_mock"))
+        if is_err:
+            status = "❌"
+        elif is_mk:
+            status = "⚠️"
+        else:
+            status = "✅"
+        detail_rows.append({
+            "时间": time_str,
+            "caller": t.get("caller", "?") or "?",
+            "prompt@ver": f"{t.get('prompt_id','?') or '?'}@{t.get('prompt_version','?') or '?'}",
+            "tokens in/out": f"{pt:,}/{ct:,}",
+            "延迟": _fmt_latency(t.get("latency_ms", 0) or 0),
+            "状态": status,
+        })
+
+    detail_df = pd.DataFrame(detail_rows)
+    row_labels = [f"#{i}" for i in range(len(detail_rows))]
+    st.dataframe(detail_df, use_container_width=True, hide_index=True, height=min(len(detail_rows) * 36 + 38, 400))
+
+    # --- 行详情（可展开） ---
+    st.markdown(f'<div style="font-size:0.85rem; text-transform:uppercase; letter-spacing:0.08em; color:{COLORS["text_muted"]}; margin-top:1rem; margin-bottom:0.5rem; font-weight:600;">查看详情</div>', unsafe_allow_html=True)
+    selected_label = st.selectbox("选择行", row_labels, key="trace_detail_row")
+    selected_idx = row_labels.index(selected_label)
+    t = traces[selected_idx]
+
+    with st.expander("System Prompt", expanded=False):
+        st.text_area("system", value=t.get("system", ""), height=200, disabled=True, key="detail_system", label_visibility="collapsed")
+    with st.expander("User Prompt", expanded=False):
+        st.text_area("user", value=t.get("user", ""), height=200, disabled=True, key="detail_user", label_visibility="collapsed")
+    with st.expander("Response", expanded=False):
+        st.text_area("response", value=t.get("response", ""), height=200, disabled=True, key="detail_resp", label_visibility="collapsed")
+
+
+# ================================================================
 # main()
 # ================================================================
 def main() -> None:
@@ -1414,8 +1702,10 @@ def main() -> None:
         render_agent_v2(data)
     elif "AI 简报" in page:
         render_briefing_page(data)
-    elif "数据问答" in page:
+    elif page == "💬 数据问答":
         render_rag_page(data)
+    elif page == "📊 LLM 追踪":
+        render_llm_traces(data)
     else:
         render_agent_v2(data)
 

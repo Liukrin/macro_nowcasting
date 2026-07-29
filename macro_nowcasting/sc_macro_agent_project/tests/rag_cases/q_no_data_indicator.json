@@ -1,0 +1,8 @@
+{
+  "case_id": "q_no_data_indicator",
+  "description": "反向用例：不存在的指标——无匹配 indicator，应返回'没有相关信息'",
+  "question": "四川省的人口出生率是多少？",
+  "expect_has_answer": false,
+  "expect_top1_contains": null,
+  "tier": "lexical"
+}

@@ -6,6 +6,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -26,6 +29,8 @@ from sc_macro_agent.api.schemas import (
 @lru_cache(maxsize=1)
 def get_engine() -> PredictionEngine:
     config = AppConfig.from_env()
+    from sc_macro_agent.llm.client import LLMClient
+    LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
     return PredictionEngine(config=config)
 
 
@@ -120,6 +125,6 @@ def factors():
 def run_agent(request: AgentTaskRequest):
     engine = get_engine()
     from sc_macro_agent.agents import AgentOrchestrator
-    orch = AgentOrchestrator()
+    orch = AgentOrchestrator(config=engine.config)
     result = orch.run(engine)
     return result

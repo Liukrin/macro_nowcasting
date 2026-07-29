@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from .client import LLMClient
+from ..config import AppConfig
 from ..prediction_engine import PredictionEngine
 from ..logging_utils import get_logger
 
@@ -20,15 +21,23 @@ class BriefingGenerator:
       - 第三段（下期预测）：as_of_quarter 的下一个季度，来自 predict_next()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, config: AppConfig) -> None:
         self.logger = get_logger("sc_macro_agent.briefing")
-        self.llm = LLMClient()
+        self.llm = LLMClient.get_instance()
+        self.config = config
 
     def build_inputs(self, engine: "PredictionEngine") -> Dict[str, Any]:
         """装配简报所需的结构化数据。返回 dict。"""
+        artifacts_dir = self.config.data.resolve_artifact_dir(create=False)
+        data_dir = self.config.data.resolve_dir()
+
         # --- 数据截至季度 ---
-        bp_path = Path("artifacts/final/backtest_predictions.csv")
-        bp_df = pd.read_csv(bp_path) if bp_path.exists() else pd.DataFrame()
+        bp_path = artifacts_dir / "final" / "backtest_predictions.csv"
+        if not bp_path.exists():
+            self.logger.warning("Missing artifact: %s", bp_path)
+            bp_df = pd.DataFrame()
+        else:
+            bp_df = pd.read_csv(bp_path)
         if not bp_df.empty:
             last_row = bp_df.iloc[-1]
             as_of_quarter = last_row["test_quarter"]
@@ -60,8 +69,12 @@ class BriefingGenerator:
             ci = {}
 
         # --- 回测指标 ---
-        metrics_path = Path("artifacts/final/final_metrics.csv")
-        metrics_df = pd.read_csv(metrics_path) if metrics_path.exists() else pd.DataFrame()
+        metrics_path = artifacts_dir / "final" / "final_metrics.csv"
+        if not metrics_path.exists():
+            self.logger.warning("Missing artifact: %s", metrics_path)
+            metrics_df = pd.DataFrame()
+        else:
+            metrics_df = pd.read_csv(metrics_path)
         metrics_text = ""
         if not metrics_df.empty:
             for model_name in ["elastic_midas_chronos", "last_value"]:
@@ -75,9 +88,11 @@ class BriefingGenerator:
                     )
 
         # --- 月度指标 ---
-        ml_path = Path("data/monthly_local_features_real.csv")
+        ml_path = data_dir / "monthly_local_features_real.csv"
         ind_lines = []
-        if ml_path.exists():
+        if not ml_path.exists():
+            self.logger.warning("Missing data file: %s", ml_path)
+        else:
             ml = pd.read_csv(ml_path)
             ml["date"] = pd.to_datetime(ml["date"])
             ml_recent = ml[ml["date"] >= "2025-01-01"]
@@ -105,54 +120,37 @@ class BriefingGenerator:
 
     def generate(self, inputs: Dict[str, Any]) -> str:
         """生成简报并做数字校验。"""
-        as_of = inputs["as_of_quarter"]
+        from ..prompts.registry import render
 
-        system = """你是省级宏观经济分析助手，输出正式书面简报。
+        prompt = render("briefing",
+            as_of=inputs["as_of_quarter"],
+            actual_latest=inputs["actual_latest"],
+            pred_quarter=inputs["pred_quarter"],
+            pred_value=inputs["pred_value"],
+            pred_model=inputs["pred_model"],
+            ci_lower=inputs["ci_lower"],
+            ci_upper=inputs["ci_upper"],
+            recent_data=inputs["recent_data"],
+            metrics=inputs["metrics"],
+            indicators=inputs["indicators"],
+        )
 
-规则（严格遵守）：
-1. 只能使用用户消息中提供的数字，禁止引入任何外部数据。
-2. 禁止提及任何具体政策文件、会议名称、领导讲话。
-3. 对预测值必须注明"模型预测，存在不确定性"。
-4. 输出结构固定为四段：
-   (1) 本期概况 —— 基于数据截至季度的实际值；
-       可附"模型此前对本期的预测为X%，误差Y个百分点"作为回顾
-   (2) 主要指标动态
-   (3) 下期预测与依据 —— 必须是下一个季度，注明是模型预测
-   (4) 风险提示
-5. 总长度控制在 400-600 字。
-6. 使用正式、客观的书面中文。
-"""
-
-        user = f"""数据截至 {as_of} 季度。
-
-请根据以下数据生成四川省经济简报。注意：
-- {as_of} 是数据中最后一个有真实值的季度，已经发生完毕。
-- 第三段的下期预测必须是 {inputs['pred_quarter']}，不是 {as_of}。
-
-【{as_of} 实际值】
-GDP累计同比增速：{inputs['actual_latest']:.1f}%
-
-【近四个季度GDP实际值】
-{inputs['recent_data']}
-
-【下期预测（{inputs['pred_quarter']}）】
-预测值：GDP累计同比增速 {inputs['pred_value']:.1f}%
-模型：{inputs['pred_model']}
-置信区间：[{inputs['ci_lower']}, {inputs['ci_upper']}]
-
-【回测评估】
-{inputs['metrics']}
-
-【近期月度指标】
-{inputs['indicators']}
-"""
-
-        answer = self.llm.chat(system=system, user=user, temperature=0.3, max_tokens=2000)
+        answer = self.llm.chat(
+            system=prompt["system"], user=prompt["user"],
+            temperature=prompt["temperature"], max_tokens=prompt["max_tokens"],
+            prompt_id=prompt["id"], prompt_version=prompt["version"],
+            caller="briefing",
+        )
 
         # 数字校验
-        if not self._validate_numbers(answer, user):
+        if not self._validate_numbers(answer, prompt["user"]):
             self.logger.warning("数字校验失败，重试一次")
-            answer = self.llm.chat(system=system, user=user, temperature=0.2, max_tokens=2000)
+            answer = self.llm.chat(
+                system=prompt["system"], user=prompt["user"],
+                temperature=0.2, max_tokens=prompt["max_tokens"],
+                prompt_id=prompt["id"], prompt_version=prompt["version"],
+                caller="briefing",
+            )
 
         return answer
 

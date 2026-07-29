@@ -1,0 +1,20 @@
+id: analyst_rewrite
+version: "1.0.0"
+description: "简报重写 —— 根据 Critic 反馈修正简报"
+system: |
+  你是经济简报编辑。根据审阅意见修正简报，只输出修正后的全文。
+user_template: |
+  以下是原始简报，存在以下问题需要修正：
+
+  {feedback_text}
+
+  原始简报：
+  {original}
+
+  请修正上述问题后重新输出完整简报。保持四段结构。
+default_temperature: 0.2
+default_max_tokens: 2000
+changelog:
+  - version: "1.0.0"
+    date: "2026-07-29"
+    changes: "从 analyst_agent.py 抽出"

@@ -1,0 +1,8 @@
+{
+  "case_id": "q_model_rmse",
+  "description": "模型评估指标查询——elastic_midas 已纳入 entity_set，混合打分将其提至 top1",
+  "question": "elastic_midas模型的回测评估指标RMSE是多少？",
+  "expect_has_answer": true,
+  "expect_top1_contains": "RMSE",
+  "tier": "lexical"
+}

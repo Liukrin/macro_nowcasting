@@ -1,0 +1,8 @@
+{
+  "case_id": "q_forward_prediction",
+  "description": "未来预测查询——forward_prediction 文档，'最新'等词无法提取结构化过滤，走全量 TF-IDF",
+  "question": "四川省GDP最新的模型预测值是多少？",
+  "expect_has_answer": true,
+  "expect_top1_contains": "模型预测",
+  "tier": "lexical"
+}

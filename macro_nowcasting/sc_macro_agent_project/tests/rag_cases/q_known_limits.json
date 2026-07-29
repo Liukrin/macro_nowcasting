@@ -1,0 +1,9 @@
+{
+  "case_id": "q_known_limits",
+  "tier": "semantic",
+  "description": "已知局限文档查询。query与答案文本chronos-2-small API不兼容无字面重叠，char n-gram无法跨过语义鸿沟，当前架构的已知盲区",
+  "question": "数据有哪些已知局限性",
+  "expect_has_answer": true,
+  "expect_top1_contains": "chronos",
+  "min_score": 0.15
+}

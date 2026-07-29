@@ -1,0 +1,4 @@
+# Chronos-Bolt 残差修正（可选）
+# 不装则 Chronos 残差修正自动跳过，主流程不受影响
+torch>=2.0
+chronos-forecasting>=2.0

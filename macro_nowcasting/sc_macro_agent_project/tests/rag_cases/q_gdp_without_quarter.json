@@ -1,0 +1,8 @@
+{
+  "case_id": "q_gdp_without_quarter",
+  "description": "无时间约束的GDP查询——抽不到时间，退回全量检索但指标关键词命中",
+  "question": "四川省GDP增速最近怎么样？",
+  "expect_has_answer": true,
+  "expect_top1_contains": "GDP",
+  "tier": "lexical"
+}

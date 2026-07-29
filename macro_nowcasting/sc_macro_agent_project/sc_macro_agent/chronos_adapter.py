@@ -8,7 +8,6 @@ from __future__ import annotations
 import time
 from typing import List, Optional, Tuple
 import numpy as np
-import torch
 
 from .logging_utils import get_logger
 
@@ -28,6 +27,7 @@ class ChronosResidualCorrector:
         self.model_name = model_name
         self.pipe = None
         self.failed = False
+        self._torch = None
         self._total_calls = 0
         self._total_time = 0.0
         self._load()
@@ -36,6 +36,8 @@ class ChronosResidualCorrector:
         import os
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         try:
+            import torch
+            self._torch = torch
             from chronos import ChronosBoltPipeline
             self.pipe = ChronosBoltPipeline.from_pretrained(
                 self.model_name,
@@ -58,7 +60,7 @@ class ChronosResidualCorrector:
             (point_prediction, (lower_bound, upper_bound))
             失败时返回 (0.0, (0.0, 0.0))。
         """
-        if self.pipe is None or self.failed:
+        if self.pipe is None or self.failed or self._torch is None:
             return 0.0, (0.0, 0.0)
 
         self._total_calls += 1
@@ -67,9 +69,9 @@ class ChronosResidualCorrector:
         try:
             # context: shape (batch=1, length=n)
             arr = np.asarray(residuals, dtype=np.float32)
-            context = torch.tensor(arr).unsqueeze(0)
+            context = self._torch.tensor(arr).unsqueeze(0)
 
-            with torch.no_grad():
+            with self._torch.no_grad():
                 pred = self.pipe.predict(context, prediction_length=1)
                 # pred shape: (1, num_samples, 1)
                 samples = pred[0, :, 0].numpy()  # (num_samples,)

@@ -35,9 +35,11 @@ class DataConfig:
         base_dir = Path(__file__).parent.parent
         return (base_dir / self.data_dir).expanduser().resolve()
 
-    def resolve_artifact_dir(self) -> Path:
-        path = Path(self.artifact_dir).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True) 
+    def resolve_artifact_dir(self, create: bool = True) -> Path:
+        base_dir = Path(__file__).parent.parent
+        path = (base_dir / self.artifact_dir).expanduser().resolve()
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         return path
 
     def as_dict(self) -> Dict[str, Any]:

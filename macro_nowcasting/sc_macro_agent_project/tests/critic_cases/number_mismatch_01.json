@@ -1,0 +1,13 @@
+{
+  "case_id": "number_mismatch_01",
+  "description": "把工业增加值 6.5% 挪用到 GDP 增速上",
+  "briefing": "**四川省宏观经济运行简报**\n\n**（一）本期概况**\n2025年第四季度，四川省经济运行平稳。GDP累计同比实际值为5.5%。\n\n**（二）主要指标动态**\n12月规模以上工业增加值累计同比增长6.5%，GDP累计同比增速亦为6.5%，两者同步回升。\n\n**（三）下期预测与依据**\n模型预测2026年第一季度GDP累计同比增速为5.37%（模型预测，存在不确定性）。\n\n**（四）风险提示**\n外部环境不确定性依然存在。",
+  "inputs": {
+    "as_of_quarter": "2025Q4",
+    "pred_quarter": "2026Q1",
+    "actual_latest": 5.5,
+    "pred_value": 5.37
+  },
+  "expect_passed": false,
+  "expect_issue_types": ["数字-语境匹配"]
+}

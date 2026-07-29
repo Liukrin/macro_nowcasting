@@ -1,0 +1,8 @@
+{
+  "case_id": "q_monthly_ind_value",
+  "description": "指定月份月度指标——测试频度标签修复（3月月度指标不会被标成季度）",
+  "question": "2025年12月四川省规模以上工业增加值累计同比是多少？",
+  "expect_has_answer": true,
+  "expect_top1_contains": "2025年12月",
+  "tier": "lexical"
+}

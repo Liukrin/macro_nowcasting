@@ -13,6 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from sc_macro_agent import AppConfig, PredictionEngine
 
 
@@ -41,6 +44,9 @@ def main() -> None:
     config = build_config(args)
     engine = PredictionEngine(config=config)
 
+    from sc_macro_agent.llm.client import LLMClient
+    LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
+
     if args.command == "audit":
         result = engine.audit_data(save_artifacts=True)
     elif args.command == "train":
@@ -55,7 +61,7 @@ def main() -> None:
         result = engine.predict_next()
     elif args.command == "agent":
         from sc_macro_agent.agents import AgentOrchestrator
-        orch = AgentOrchestrator()
+        orch = AgentOrchestrator(config=engine.config)
         result = orch.run(engine)
     else:
         engine.initialize()

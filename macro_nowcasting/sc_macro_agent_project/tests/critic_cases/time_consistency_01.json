@@ -1,0 +1,13 @@
+{
+  "case_id": "time_consistency_01",
+  "description": "把预测季度 2026Q1 描述成实际值",
+  "briefing": "**四川省宏观经济运行简报**\n\n**（一）本期概况**\n2025年第四季度，四川省经济运行平稳，GDP累计同比增速为5.5%。\n\n**（二）主要指标动态**\n工业生产保持增长，消费市场持续恢复。\n\n**（三）下期预测与依据**\n2026年第一季度实际增速为5.4%，延续了稳健增长态势。\n\n**（四）风险提示**\n外部环境不确定性依然存在，模型预测存在不确定性。",
+  "inputs": {
+    "as_of_quarter": "2025Q4",
+    "pred_quarter": "2026Q1",
+    "actual_latest": 5.5,
+    "pred_value": 5.37
+  },
+  "expect_passed": false,
+  "expect_issue_types": ["时间一致性"]
+}
