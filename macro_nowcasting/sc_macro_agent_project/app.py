@@ -584,8 +584,8 @@ def create_leaderboard_chart(df: pd.DataFrame) -> go.Figure | None:
 
     fig = apply_base_style(fig)
     fig.update_layout(
-        height=320,
-        margin=dict(l=10, r=40, t=10, b=10),
+        height=300,
+        margin=dict(l=120, r=40, t=10, b=10),
         xaxis_title=f"<b>{score_col.upper()}</b>",
         yaxis_title="",
         showlegend=False,
@@ -623,13 +623,14 @@ def create_backtest_line(window_df: pd.DataFrame) -> go.Figure | None:
 
     fig = apply_base_style(fig)
     fig.update_layout(
-        height=400,
+        height=300,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center"),
         xaxis_title="<b>季度</b>",
         yaxis_title="<b>GDP 数值</b>",
         hovermode="x unified",
     )
+    fig.update_xaxes(tickangle=-45, nticks=8)
     return fig
 
 
@@ -662,8 +663,9 @@ def create_error_bar(window_df: pd.DataFrame) -> go.Figure | None:
     ))
 
     fig = apply_base_style(fig)
+    fig.update_xaxes(tickangle=-45, nticks=8)
     fig.update_layout(
-        height=320,
+        height=300,
         margin=dict(l=10, r=10, t=40, b=10),
         xaxis_title="<b>季度</b>",
         yaxis_title="<b>绝对误差</b>",
@@ -915,13 +917,19 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
         f'<div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: {COLORS["text_muted"]}; margin-bottom: 1rem; font-weight: 700;">系统状态</div>',
         unsafe_allow_html=True)
 
-    cols = st.sidebar.columns(2)
-    cols[0].metric("模型", summary.get("selected_model") or "-", label_visibility="collapsed")
-    cols[1].metric("模式", status.get("dataset_mode") or "-", label_visibility="collapsed")
-
-    cols = st.sidebar.columns(2)
-    cols[0].metric("样本", status.get("n_rows") or 0, label_visibility="collapsed")
-    cols[1].metric("特征", status.get("n_features") or 0, label_visibility="collapsed")
+    # 用 markdown 渲染系统状态，替代 st.metric（避免窄屏/长模型名截断）
+    model_name = summary.get("selected_model") or "-"
+    dataset_mode = status.get("dataset_mode") or "-"
+    n_rows = status.get("n_rows") or 0
+    n_features = status.get("n_features") or 0
+    st.sidebar.markdown(
+        f'<div style="font-size:0.85rem;color:{COLORS["text_primary"]};margin-bottom:0.6rem;">'
+        f'<b>模型</b>&nbsp;{model_name}&ensp;|&ensp;<b>模式</b>&nbsp;{dataset_mode}'
+        f'</div>'
+        f'<div style="font-size:0.85rem;color:{COLORS["text_primary"]};">'
+        f'<b>样本</b>&nbsp;{n_rows} 行&ensp;·&ensp;<b>特征</b>&nbsp;{n_features} 维'
+        f'</div>',
+        unsafe_allow_html=True)
 
     # Prediction info
     prediction = data["prediction"]
@@ -1859,6 +1867,8 @@ def main() -> None:
     # 引擎初始化失败时在页面顶部显式提示（不要只 print 到 stderr）
     if _init_err:
         st.warning(f"流水线初始化失败，部分功能不可用：{_init_err}")
+    # 移动端导航引导：窄屏下侧边栏默认折叠，提示用户展开
+    st.caption("◀ 点击左上角图标展开导航菜单")
     page, refresh = sidebar_controls(data)
 
     if refresh:
