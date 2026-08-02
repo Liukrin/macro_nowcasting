@@ -366,6 +366,9 @@ def render_warning_pills(items: Iterable[str]) -> None:
 
 @st.cache_resource(show_spinner=False)
 def load_engine() -> PredictionEngine:
+    """纯计算函数：初始化引擎并跑完整流水线。不含任何 st.* UI 调用。
+    UI 由 main() 负责渲染；缓存命中时函数体整体跳过，幂等。
+    """
     import os, sys
     _tick("load_engine:enter")
     if _TIMING_ON:
@@ -375,34 +378,23 @@ def load_engine() -> PredictionEngine:
     _tick("load_engine:engine_constructed")
     from sc_macro_agent.llm.client import LLMClient
     LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
-    # 默认跑完整流水线：审计 → 构建特征 → 训练 → 回测 → 预测；
-    # SC_MACRO_LIGHT_MODE=true 时退回轻量（仅审计+构建特征）。
-    # （原 SC_MACRO_FULL_PIPELINE 变量已废弃）
     light_mode = os.environ.get("SC_MACRO_LIGHT_MODE", "").lower() == "true"
     _tick("load_engine:before_run_agent")
     try:
         engine.initialize()
         if light_mode:
-            with st.status("轻量模式：仅审计数据与构建特征…", expanded=False) as _status:
-                engine.audit_data(save_artifacts=False)
-                engine.build_features()
-                _status.update(label="轻量模式初始化完成（未训练/未回测）", state="complete")
+            engine.audit_data(save_artifacts=False)
+            engine.build_features()
         else:
-            with st.status("正在初始化引擎（审计数据 → 构建特征 → 训练模型 → 运行回测）…", expanded=False) as _status:
-                engine.audit_data(save_artifacts=False)
-                _status.update(label="正在构建特征…")
-                engine.build_features()
-                _status.update(label="正在训练模型…")
-                engine.train()
-                _status.update(label="正在运行回测…")
-                try:
-                    engine.backtest()
-                except Exception as bt_exc:
-                    engine.warnings.append(str(bt_exc))
-                    engine.agent.record_warning(str(bt_exc))
-                _status.update(label="正在生成预测…")
-                engine.predict_next()
-                _status.update(label="引擎初始化完成", state="complete")
+            engine.audit_data(save_artifacts=False)
+            engine.build_features()
+            engine.train()
+            try:
+                engine.backtest()
+            except Exception as bt_exc:
+                engine.warnings.append(str(bt_exc))
+                engine.agent.record_warning(str(bt_exc))
+            engine.predict_next()
     except Exception as e:
         print(f"[WARN] Pipeline init failed: {e}", file=sys.stderr)
         engine._init_error = str(e)
@@ -416,7 +408,7 @@ def load_engine() -> PredictionEngine:
 # 及其中的 engine 会被所有会话共用。
 #   - 本项目为单人演示场景，共享引擎可接受；
 #   - 生产环境需改为每会话独立实例或加锁（该条已同步至 known_limitations.md）。
-@st.cache_resource(show_spinner="正在加载模型与数据，首次约需 10 秒…")
+@st.cache_resource(show_spinner=False)
 def load_view_data(_: int) -> Dict[str, Any]:
     _tick("load_view_data:enter")
     engine = load_engine()
@@ -1796,10 +1788,17 @@ def render_llm_traces(_data: Dict[str, Any]) -> None:
 # ================================================================
 def main() -> None:
     _tick("main:enter")
-    data = load_view_data(1)
+    # 在 main() 渲染 status，不放在 @st.cache_resource 内部：
+    # 冷缓存时展示初始化进度并 显式 complete；热缓存时瞬间完成，人眼不可感知
+    with st.status("正在初始化引擎…", expanded=False) as _init_status:
+        data = load_view_data(1)
+        _init_err = getattr(data["engine"], "_init_error", None)
+        if _init_err:
+            _init_status.update(label="引擎初始化失败", state="error")
+        else:
+            _init_status.update(label="引擎初始化完成", state="complete")
     _tick("main:after_load_view_data")
     # 引擎初始化失败时在页面顶部显式提示（不要只 print 到 stderr）
-    _init_err = getattr(data["engine"], "_init_error", None)
     if _init_err:
         st.warning(f"流水线初始化失败，部分功能不可用：{_init_err}")
     page, refresh = sidebar_controls(data)
