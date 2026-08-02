@@ -918,6 +918,24 @@ def create_registry_pie(df: pd.DataFrame, name_col: str) -> go.Figure | None:
 
 
 # ==================== 侧边栏控制 ====================
+# ---- 导航双向同步（单一真相源 current_page）----
+def _sync_page_from(widget_key: str) -> None:
+    """导航 widget 变更时写回统一的路由状态。"""
+    st.session_state.current_page = st.session_state[widget_key]
+
+
+def _prime_nav_widget(widget_key: str) -> None:
+    """把 widget 的 state 对齐到 current_page。
+
+    Streamlit 在 key 已存在时忽略 index 参数，只能通过直接写 session_state 同步。
+    必须在对应 widget 创建**之前**调用，之后调用会抛
+    "cannot be modified after the widget is instantiated"。
+    """
+    cur = st.session_state.current_page
+    if st.session_state.get(widget_key) != cur:
+        st.session_state[widget_key] = cur
+
+
 PAGE_NAMES = [
     "🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析",
     "🧪 数据质量", "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答", "📊 LLM 追踪",
@@ -939,13 +957,15 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
         unsafe_allow_html=True,
     )
 
-    # 与 main() 中顶部导航共用 session_state.current_page
+    # 与 main() 中顶部导航共用 session_state.current_page 作为单一真相源
     st.session_state.setdefault("current_page", PAGE_NAMES[0])
+    _prime_nav_widget("_nav_side")
     page = st.sidebar.radio(
         "导航",
         PAGE_NAMES,
-        index=PAGE_NAMES.index(st.session_state.current_page),
-        key="current_page",
+        key="_nav_side",
+        on_change=_sync_page_from,
+        args=("_nav_side",),
         label_visibility="collapsed",
     )
 
@@ -2107,14 +2127,15 @@ def main() -> None:
         st.warning(f"流水线初始化失败，部分功能不可用：{_init_err}")
     # 顶部导航兜底（移动端侧边栏图标可能被遮挡）
     st.session_state.setdefault("current_page", PAGE_NAMES[0])
+    _prime_nav_widget("_nav_top")
     with st.expander("📑 页面导航", expanded=False):
-        chosen = st.selectbox(
+        st.selectbox(
             "跳转到", PAGE_NAMES,
-            index=PAGE_NAMES.index(st.session_state.current_page),
-            key="_page_nav",
+            key="_nav_top",
+            on_change=_sync_page_from,
+            args=("_nav_top",),
             label_visibility="collapsed",
         )
-        st.session_state.current_page = chosen
     st.caption("📑 使用上方导航切换页面，或点击左上角图标展开侧边栏")
     page, refresh = sidebar_controls(data)
 
