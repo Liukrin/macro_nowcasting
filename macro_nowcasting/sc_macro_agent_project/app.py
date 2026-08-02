@@ -1535,7 +1535,20 @@ def render_rag_page(data: Dict[str, Any]) -> None:
         elif not result.get("rewrite_applied"):
             st.caption(f"检索词：{q}（未改写）")
         with st.expander("参考来源"):
-                st.caption(f"[{i+1}] 相似度={src['score']:.3f} | {src['text'][:200]}")
+            try:
+                for i, src in enumerate(result.get("sources", [])[:5]):
+                    score_val = src.get("score")
+                    try:
+                        score_str = f"{float(score_val):.3f}" if score_val is not None else "-"
+                    except (TypeError, ValueError):
+                        score_str = "-"
+                    text_val = src.get("text") or "(无正文)"
+                    st.caption(f"[{i+1}] 相似度={score_str} | {text_val[:200]}")
+            except Exception:
+                self_logger = getattr(__import__('logging', fromlist=['getLogger']), 'getLogger', lambda _: None)("sc_macro_agent.app")
+                if self_logger:
+                    self_logger.warning("参考来源渲染失败", exc_info=True)
+                st.caption("参考来源渲染失败")
 
 
 # ================================================================
