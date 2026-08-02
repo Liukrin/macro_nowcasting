@@ -328,6 +328,14 @@ CUSTOM_CSS = f"""
     ::-webkit-scrollbar-thumb:hover {{
         background: {COLORS["border_hover"]};
     }}
+    /* 导航 emoji 字体统一，避免部分字形回退到单色符号字体导致宽度不一致 */
+    section[data-testid="stSidebar"] div[role="radiogroup"] label p,
+    div[data-testid="stExpander"] div[data-baseweb="select"] div {{
+        font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji",
+                     "Segoe UI Symbol", -apple-system, "PingFang SC",
+                     "Microsoft YaHei", sans-serif;
+        font-variant-emoji: emoji;
+    }}
 </style>
 """
 
@@ -938,7 +946,7 @@ def _prime_nav_widget(widget_key: str) -> None:
 
 PAGE_NAMES = [
     "🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析",
-    "🧪 数据质量", "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答", "📊 LLM 追踪",
+    "🧪 数据质量", "🔧 Agent 工作流", "📝 AI 简报", "💬 数据问答", "📊 LLM 追踪",
 ]
 
 def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
@@ -2165,9 +2173,9 @@ def main() -> None:
         render_agent_v2(data)
     elif "AI 简报" in page:
         render_briefing_page(data)
-    elif page == "💬 数据问答":
+    elif "数据问答" in page:
         render_rag_page(data)
-    elif page == "📊 LLM 追踪":
+    elif "LLM 追踪" in page:
         render_llm_traces(data)
     else:
         render_agent_v2(data)
