@@ -14,7 +14,7 @@ st.set_page_config(
     page_title="四川省 GDP 混频预测系统",
     page_icon="◐",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # --- 诊断计时器（仅本步诊断用；默认关闭，SC_MACRO_DEBUG_TIMING=true 时开启） ---
@@ -315,6 +315,18 @@ def fmt_pct_decimal(value: Any, digits: int = 1, default: str = "-") -> str:
         return f"{float(value) * 100:.{digits}f}%"
     except (TypeError, ValueError):
         return str(value)
+
+
+# 预测注记展示层映射：prediction_engine 产出的英文常量 → 中文（数据层契约不改，仅展示层翻译）
+_NOTE_TRANSLATIONS = {
+    "prediction_generated_from_latest_available_quarter_features": "预测基于最新可用季度的特征生成",
+    "if_real_data_is_short_treat_as_demo_nowcast_not_production_forecast": "样本量有限，本结果应视为演示性 nowcast，非生产级预测",
+}
+
+
+def _format_prediction_note(note: str) -> str:
+    """把英文注记常量映射为中文，未命中的原样显示。"""
+    return _NOTE_TRANSLATIONS.get(note, note)
 
 
 def safe_df(data: Any) -> pd.DataFrame:
@@ -914,9 +926,9 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
         # 轻量模式下未跑回测，confidence_interval 可能为 None（key 存在但值为 None），需兜底
         ci = prediction.get("confidence_interval") or {}
         st.sidebar.markdown(
-            f'<div style="font-size: 1.2rem; font-weight: 800; color: {COLORS["accent_cyan"]};">{pred_q}: {pred_val:.1f}%</div>',
+            f'<div style="font-size: 1.2rem; font-weight: 800; color: {COLORS["accent_cyan"]};">{pred_q}: {fmt_number(pred_val, 2)}%</div>',
             unsafe_allow_html=True)
-        st.sidebar.caption(f"90% CI [{ci.get('lower','?')}, {ci.get('upper','?')}] | {prediction.get('target_transform','?')}")
+        st.sidebar.caption(f"90% CI [{fmt_number(ci.get('lower'))}, {fmt_number(ci.get('upper'))}] | {prediction.get('target_transform','?')}")
         cs = prediction.get("chronos_state", "?")
         st.sidebar.caption(f"Chronos: {cs} | 修正: {prediction.get('chronos_correction',0):.2f}")
 
@@ -1011,12 +1023,14 @@ def render_overview(data: Dict[str, Any]) -> None:
     with c3:
         rmse = metrics.get('rmse')
         r2 = metrics.get('r2')
+        dir_acc = metrics.get('direction_accuracy')
+        dir_acc_text = f"{dir_acc:.1%}" if dir_acc is not None else '-'
         st.markdown(
             f"""
             <div class="kpi-card accent-green">
-                <div class="label">回测性能</div>
+                <div class="label">回测性能（32窗口·含疫情期）</div>
                 <div class="value" style="font-size: 1.8rem;">RMSE {fmt_number(rmse, 3) if rmse else '-'}</div>
-                <div class="meta">R² = {fmt_number(r2, 3) if r2 else '-'} | MAPE {fmt_pct_decimal(metrics.get('mape'), 2)}</div>
+                <div class="meta">R² = {fmt_number(r2, 3) if r2 else '-'} | 方向准确率 {dir_acc_text}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1041,12 +1055,14 @@ def render_overview(data: Dict[str, Any]) -> None:
 
     b1, b2 = st.columns([1, 1], gap="large")
     with b1:
-        render_section("Model Selection", "候选模型对比", "基于回测表现的模型自动选择 leaderboard")
+        render_section("Model Selection", "候选模型对比", "基于验证集（近12季·差分口径）的模型自动选择")
         fig = create_leaderboard_chart(leaderboard_df)
         if fig is not None:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         if not leaderboard_df.empty:
+            st.caption("此处 RMSE 为验证集差分口径，与上方 32 窗口回测（level 口径，含 2020 年断点）不可直接比较。")
             with st.expander("查看详细指标"):
+                st.caption("MAPE 在目标值接近零时会失真（2020 年前后 GDP 累计同比曾降至 -3% 附近），本项目以 RMSE 与方向准确率为主要评价指标。")
                 st.dataframe(leaderboard_df, use_container_width=True, hide_index=True)
 
     with b2:
@@ -1054,8 +1070,8 @@ def render_overview(data: Dict[str, Any]) -> None:
         pred_data = {
             "目标指标": prediction.get("target_indicator"),
             "预测季度": prediction.get("prediction_quarter"),
-            "预测值": prediction.get("prediction_value"),
-            "基准值": prediction.get("benchmark_value"),
+            "预测值": fmt_number(prediction.get("prediction_value"), 2),
+            "基准值": fmt_number(prediction.get("benchmark_value"), 2),
             "选用模型": prediction.get("model_name"),
             "最新数据季度": prediction.get("based_on_latest_quarter"),
         }
@@ -1068,7 +1084,7 @@ def render_overview(data: Dict[str, Any]) -> None:
                 unsafe_allow_html=True)
             for note in notes:
                 st.markdown(
-                    f'<div style="padding: 0.5rem 0; color: {COLORS["text_secondary"]}; font-size: 0.9rem; border-bottom: 1px solid {COLORS["border"]};">• {note}</div>',
+                    f'<div style="padding: 0.5rem 0; color: {COLORS["text_secondary"]}; font-size: 0.9rem; border-bottom: 1px solid {COLORS["border"]};">• {_format_prediction_note(note)}</div>',
                     unsafe_allow_html=True)
 
 
@@ -1173,7 +1189,7 @@ def render_nowcast(data: Dict[str, Any]) -> None:
                 unsafe_allow_html=True)
             for note in notes:
                 st.markdown(
-                    f'<div style="margin-top: 0.5rem; padding: 0.75rem; background: {COLORS["bg_tertiary"]}; border-radius: 8px; font-size: 0.9rem; color: {COLORS["text_secondary"]}; border-left: 3px solid {COLORS["accent_cyan"]};">{note}</div>',
+                    f'<div style="margin-top: 0.5rem; padding: 0.75rem; background: {COLORS["bg_tertiary"]}; border-radius: 8px; font-size: 0.9rem; color: {COLORS["text_secondary"]}; border-left: 3px solid {COLORS["accent_cyan"]};">{_format_prediction_note(note)}</div>',
                     unsafe_allow_html=True)
 
 
@@ -1333,7 +1349,7 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
                     st.write(f"✅ 数据审计完成 ({elapsed:.1f}s)")
                 elif "model_agent" in name:
                     mr = s.get("result", {})
-                    st.write(f"✅ 模型预测完成 ({elapsed:.1f}s) — {mr.get('prediction_quarter','?')}: {mr.get('prediction_value',0):.1f}%")
+                    st.write(f"✅ 模型预测完成 ({elapsed:.1f}s) — {mr.get('prediction_quarter','?')}: {fmt_number(mr.get('prediction_value'), 2)}%")
                 elif "analyst_agent" in name:
                     st.write(f"✅ 简报生成完成 ({elapsed:.1f}s)")
                 elif "critic" in name:
