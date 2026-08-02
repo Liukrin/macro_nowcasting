@@ -64,10 +64,12 @@ class ChronosResidualCorrector:
             self.pipe = None
             self.logger.warning("Chronos loading failed (模型权重缺失): %s", exc)
         except Exception as exc:
+            import traceback
             self.failed = True
-            self.failure_reason = "推理失败"
+            self.failure_reason = f"加载异常（{type(exc).__name__}）"
             self.pipe = None
-            self.logger.warning("Chronos loading failed (推理失败): %s", exc)
+            self.logger.warning("Chronos loading failed (%s): %s\n%s",
+                                type(exc).__name__, exc, traceback.format_exc())
 
     def correct(self, residuals: np.ndarray) -> Tuple[float, Tuple[float, float]]:
         """对残差序列做一步预测，返回 (点预测, (下分位, 上分位))。
