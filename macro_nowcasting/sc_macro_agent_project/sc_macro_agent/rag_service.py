@@ -147,6 +147,18 @@ def _extract_query_filters(query: str, entity_set: set[str]) -> dict:
     }
 
 
+# 元问题正则：这些表述指向系统能力/身份，而非具体数据查询
+_META_PATTERNS = re.compile(
+    r'(你是什么|你是谁|介绍一下|你能回答|你能做什么|你会什么|你会回答|'
+    r'这个系统|什么功能|能干嘛|能做什么|帮助|使用说明)'
+)
+
+
+def _is_meta_question(question: str) -> bool:
+    """判断用户问题是否为系统能力/身份类元问题。"""
+    return bool(_META_PATTERNS.search(question))
+
+
 class RAGService:
     """检索增强生成服务。"""
 
@@ -643,22 +655,46 @@ class RAGService:
         """RAG 问答：查询改写 → TF-IDF 检索 → LLM 生成。
 
         流程：
+          0. 元问题预检 → 直接走能力说明路径
           1. LLM 改写问题为语料术语关键词
           2. 返回 __CAPABILITY__ → 能力说明路径
           3. 改写后关键词检索 → 未命中则原问题兜底检索
           4. 两次都未命中 → 能力说明路径
+          5. 命中但 LLM 判断不相关 → 走能力说明路径（兜底）
         """
         rewrite_keywords: str | None = None
         rewrite_applied = False
+        rewrite_reason: str | None = None  # 降级原因，供 UI 展示
+
+        # 0. 元问题预检：不用检索，直接说明能力
+        if _is_meta_question(question):
+            return {
+                "answer": self._capability_answer(),
+                "sources": [],
+                "rewrite_keywords": "__CAPABILITY__",
+                "rewrite_applied": True,
+                "rewrite_reason": None,
+            }
 
         # 1. 查询改写
-        kw = self._rewrite_query(question)
+        if self.llm.is_mock:
+            rewrite_reason = "LLM 不可用"
+        else:
+            try:
+                kw = self._rewrite_query(question)
+            except Exception as exc:
+                kw = None
+                rewrite_reason = f"改写异常: {exc}"
+        if kw is None and rewrite_reason is None and not self.llm.is_mock:
+            rewrite_reason = "改写返回空，已降级"
+
         if kw and kw.strip() == "__CAPABILITY__":
             return {
                 "answer": self._capability_answer(),
                 "sources": [],
                 "rewrite_keywords": "__CAPABILITY__",
                 "rewrite_applied": True,
+                "rewrite_reason": None,
             }
         if kw:
             rewrite_keywords = kw
@@ -680,6 +716,7 @@ class RAGService:
                 "sources": [],
                 "rewrite_keywords": rewrite_keywords if rewrite_applied else None,
                 "rewrite_applied": rewrite_applied,
+                "rewrite_reason": rewrite_reason,
             }
 
         # 5. 拼装 context + LLM 生成
@@ -702,6 +739,7 @@ class RAGService:
             "sources": [{"text": t, "score": s, "metadata": m} for t, s, m in sources],
             "rewrite_keywords": rewrite_keywords if rewrite_applied else None,
             "rewrite_applied": rewrite_applied,
+            "rewrite_reason": rewrite_reason,
         }
 
     @staticmethod

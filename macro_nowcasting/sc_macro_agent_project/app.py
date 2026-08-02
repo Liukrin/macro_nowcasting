@@ -1507,7 +1507,7 @@ def render_rag_page(data: Dict[str, Any]) -> None:
         "2024年三季度四川GDP增速是多少",
         "这个模型比基准好多少",
         "数据有哪些已知局限",
-        "2026年一季度的预测是多少",
+        "为什么预测的是2025Q4而不是2026Q1",
     ]
     cols = st.columns(4)
     q = None
@@ -1525,13 +1525,16 @@ def render_rag_page(data: Dict[str, Any]) -> None:
             result = rag.ask(q)
         st.markdown(f"**问：** {q}")
         st.markdown(f"**答：** {result['answer']}")
-        # 检索词展示（调试信息 + 技术细节窗口）
+        # 检索词展示（调试信息 + 技术细节窗口，含降级原因）
         rw_keywords = result.get("rewrite_keywords")
+        rw_reason = result.get("rewrite_reason")
         if rw_keywords:
             if rw_keywords == "__CAPABILITY__":
                 st.caption("检索词：能力说明路径（系统能力询问）")
             elif result.get("rewrite_applied"):
                 st.caption(f"检索词：{rw_keywords}")
+        elif rw_reason:
+            st.caption(f"检索词：{q}（{rw_reason}）")
         elif not result.get("rewrite_applied"):
             st.caption(f"检索词：{q}（未改写）")
         with st.expander("参考来源"):
