@@ -1507,68 +1507,228 @@ def get_rag_service():
     return RAGService(config=engine.config, engine=engine)
 
 
+def _submit_question(rag, q: str) -> None:
+    """统一提交入口：预设按钮和 chat_input 都走此函数。
+
+    先 append user 消息到 session_state（crash safety），
+    再手动渲染用户气泡 + assistant 占位（spinner 在 assistant 内部），
+    最后 append assistant 结果并 rerun 交由正常渲染循环接管。
+    """
+    msgs = st.session_state["rag_messages"]
+
+    # 1. append user（即使在 ask() 崩溃后也能保留）
+    msgs.append({"role": "user", "content": q, "meta": None})
+
+    # 2. build history（不含刚 append 的这条）
+    history = [{"role": m["role"], "content": m["content"]} for m in msgs[:-1]]
+
+    # 3. 即时渲染：用户气泡 + assistant 占位（spinner 在气泡内部）
+    with st.chat_message("user"):
+        st.markdown(q)
+    with st.chat_message("assistant"):
+        with st.spinner("思考中…"):
+            try:
+                result = rag.ask(q, history=history)
+            except Exception as exc:
+                result = {
+                    "answer": f"查询失败：{exc}",
+                    "sources": [], "route": "rag_no_hit", "tool_calls": [],
+                    "rewrite_keywords": None, "rewrite_applied": False,
+                    "rewrite_reason": str(exc), "elapsed_s": 0, "n_history_used": 0,
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cache_hit_tokens": 0,
+                              "total_tokens": 0, "est_cost_cny": 0, "n_llm_calls": 0},
+                }
+
+    # 4. append assistant
+    msgs.append({
+        "role": "assistant",
+        "content": result["answer"],
+        "meta": {
+            "route": result.get("route", ""),
+            "tool_calls": result.get("tool_calls", []),
+            "rewrite_keywords": result.get("rewrite_keywords"),
+            "rewrite_applied": result.get("rewrite_applied", False),
+            "sources": result.get("sources", []),
+            "usage": result.get("usage", {}),
+            "elapsed_s": result.get("elapsed_s", 0),
+        },
+    })
+
+    # 5. rerun —— 下一轮渲染循环接管全部历史
+    st.rerun()
+
+
+def _fmt_tool_badge(tool_calls: list[dict]) -> str:
+    """格式化工具调用为单行徽标文本。"""
+    parts: list[str] = []
+    for tc in tool_calls:
+        name = tc.get("name", "?")
+        args = tc.get("arguments", {})
+        summary = tc.get("result_summary", {})
+
+        # 构建参数串
+        arg_parts: list[str] = []
+        indicator = args.get("indicator", "")
+        if indicator:
+            arg_parts.append(str(indicator))
+        year = args.get("year")
+        if year:
+            arg_parts.append(str(year))
+        quarter = args.get("quarter")
+        if quarter:
+            arg_parts.append(f"Q{quarter}")
+        month = args.get("month")
+        if month:
+            arg_parts.append(f"{month}月")
+        region = args.get("region")
+        if region:
+            arg_parts.append(str(region))
+        args_str = ", ".join(arg_parts)
+
+        # 结果摘要
+        result_str = ""
+        if summary.get("found") is True:
+            val = summary.get("value")
+            indicator_name = summary.get("matched_indicator", "")
+            if indicator_name:
+                result_str = f"{indicator_name} → {val}"
+            else:
+                result_str = f"→ {val}"
+        elif summary.get("available") is True:
+            result_str = "✓"
+        elif summary.get("candidates"):
+            cands = summary["candidates"]
+            result_str = f"候选: {', '.join(c['name'] for c in cands)}"
+        elif name == "list_indicators":
+            result_str = "已列出"
+
+        if result_str:
+            parts.append(f"{name}({args_str}) {result_str}")
+        else:
+            parts.append(f"{name}({args_str})")
+    return " ｜ ".join(parts)
+
+
 def render_rag_page(data: Dict[str, Any]) -> None:
-    """RAG 数据问答页。"""
+    """RAG 数据问答页 —— 多轮聊天界面。"""
     render_section("Data Q&A", "AI 数据问答", "基于项目数据和模型产出的智能问答")
 
     # Warning if no API key
-    import os
     if not os.environ.get("DEEPSEEK_API_KEY"):
         st.warning("⚠️ 未设置 DEEPSEEK_API_KEY，回答为 mock 降级模式。设置环境变量后重启以启用真实 AI 问答。")
 
     rag = get_rag_service()
 
-    # Preset questions
-    st.markdown("**快捷提问：**")
-    presets = [
-        "2024年三季度四川GDP增速是多少",
-        "这个模型比基准好多少",
-        "数据有哪些已知局限",
-        "为什么预测的是2025Q4而不是2026Q1",
-    ]
-    cols = st.columns(4)
-    q = None
-    for i, preset in enumerate(presets):
-        if cols[i].button(preset, key=f"preset_{i}", use_container_width=True):
-            q = preset
+    # ---- 会话状态 ----
+    if "rag_messages" not in st.session_state:
+        st.session_state["rag_messages"] = []
 
-    # Chat input
-    user_q = st.chat_input("输入问题...")
-    if user_q:
-        q = user_q
+    # ---- 工具栏 ----
+    c_tool1, c_tool2 = st.columns([1, 5])
+    with c_tool1:
+        if st.button("🗑 清空对话", use_container_width=True):
+            st.session_state["rag_messages"] = []
+            st.rerun()
+    with c_tool2:
+        show_details = st.toggle("显示技术细节", value=False)
 
-    if q:
-        with st.spinner("检索中..."):
-            result = rag.ask(q)
-        st.markdown(f"**问：** {q}")
-        st.markdown(f"**答：** {result['answer']}")
-        # 检索词展示（调试信息 + 技术细节窗口，含降级原因）
-        rw_keywords = result.get("rewrite_keywords")
-        rw_reason = result.get("rewrite_reason")
-        if rw_keywords:
-            if rw_keywords == "__CAPABILITY__":
-                st.caption("检索词：能力说明路径（系统能力询问）")
-            elif result.get("rewrite_applied"):
-                st.caption(f"检索词：{rw_keywords}")
-        elif rw_reason:
-            st.caption(f"检索词：{q}（{rw_reason}）")
-        elif not result.get("rewrite_applied"):
-            st.caption(f"检索词：{q}（未改写）")
-        with st.expander("参考来源"):
-            try:
-                for i, src in enumerate(result.get("sources", [])[:5]):
-                    score_val = src.get("score")
-                    try:
-                        score_str = f"{float(score_val):.3f}" if score_val is not None else "-"
-                    except (TypeError, ValueError):
-                        score_str = "-"
-                    text_val = src.get("text") or "(无正文)"
-                    st.caption(f"[{i+1}] 相似度={score_str} | {text_val[:200]}")
-            except Exception:
-                self_logger = getattr(__import__('logging', fromlist=['getLogger']), 'getLogger', lambda _: None)("sc_macro_agent.app")
-                if self_logger:
-                    self_logger.warning("参考来源渲染失败", exc_info=True)
-                st.caption("参考来源渲染失败")
+    # ---- 渲染全部历史气泡 ----
+    for msg in st.session_state["rag_messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+            if msg["role"] == "assistant" and msg.get("meta"):
+                meta = msg["meta"]
+                route = meta.get("route", "")
+                elapsed = meta.get("elapsed_s", 0)
+                usage = meta.get("usage", {})
+                tool_calls = meta.get("tool_calls", [])
+                sources = meta.get("sources", [])
+                rw_keywords = meta.get("rewrite_keywords")
+
+                # 技术细节行（toggle 控制）
+                if show_details:
+                    # 路由徽标
+                    if route == "tool" and tool_calls:
+                        st.caption(f"🔧 {_fmt_tool_badge(tool_calls)}")
+                    elif route == "rag":
+                        kw_str = rw_keywords if rw_keywords else "（原始提问）"
+                        st.caption(f"🔍 检索词：{kw_str} ｜ {len(sources)} 条来源")
+                    elif route == "rag_no_hit":
+                        st.caption("🔍 未检索到匹配数据，以下为系统能力说明")
+
+                    # 耗时 + token + 费用
+                    tt = usage.get("total_tokens", 0)
+                    cost = usage.get("est_cost_cny", 0)
+                    st.caption(
+                        f"耗时 {elapsed:.1f}s ｜ "
+                        f"{tt} tokens ｜ "
+                        f"¥{cost:.4f}"
+                    )
+
+                # 参考来源（始终可展开）
+                if sources:
+                    with st.expander("参考来源"):
+                        for i, src in enumerate(sources[:5]):
+                            s_text = src.get("text", "") or "(无正文)"
+                            s_score = src.get("score")
+                            try:
+                                s_score_str = f"{float(s_score):.3f}" if s_score is not None else "-"
+                            except (TypeError, ValueError):
+                                s_score_str = "-"
+                            s_pool = src.get("metadata", {}).get("pool", "?")
+                            st.caption(
+                                f"[{i+1}] pool={s_pool} score={s_score_str} ｜ "
+                                f"{s_text[:200]}"
+                            )
+
+    # ---- 预设问题（仅在无历史时显示）----
+    if not st.session_state["rag_messages"]:
+        st.markdown("**试试问：**")
+        presets = [
+            "2024年三季度四川GDP增速是多少",
+            "全国PMI最近怎么样",
+            "哪个模型RMSE最低",
+            "你能回答什么",
+        ]
+        cols = st.columns(4)
+        q_clicked = None
+        for i, preset in enumerate(presets):
+            if cols[i].button(preset, key=f"preset_{i}", use_container_width=True):
+                q_clicked = preset
+
+        # 别名行（自动生成，不手写）
+        from sc_macro_agent.rag_service import get_indicator_aliases
+        aliases = get_indicator_aliases()
+        alias_pairs = [f"{a}={c}" for a, c in list(aliases.items())[:6]]
+        alias_line = " / ".join(alias_pairs)
+        st.caption(f"支持简称：{alias_line}；也支持追问，如「那2023年呢」")
+
+        if q_clicked:
+            _submit_question(rag, q_clicked)
+
+    # ---- 聊天输入 ----
+    if user_q := st.chat_input("输入问题..."):
+        _submit_question(rag, user_q)
+
+    # ---- 累计用量 ----
+    msgs = st.session_state["rag_messages"]
+    total_tokens = 0
+    total_cost = 0.0
+    n_user_msgs = 0
+    for msg in msgs:
+        if msg["role"] == "user" and msg.get("meta") is None:
+            n_user_msgs += 1
+        if msg["role"] == "assistant" and msg.get("meta"):
+            u = msg["meta"].get("usage", {})
+            total_tokens += u.get("total_tokens", 0)
+            total_cost += u.get("est_cost_cny", 0)
+    if n_user_msgs > 0:
+        st.caption(
+            f"本次会话：{n_user_msgs} 轮 ｜ "
+            f"{total_tokens} tokens ｜ "
+            f"¥{total_cost:.4f}"
+        )
 
 
 # ================================================================

@@ -23,6 +23,73 @@ _PRICE_COMPLETION_PER_1K = 0.002   # CNY / 1K output tokens
 # 单次 chat 总耗时上限（含重试）：超过则直接降级 mock，避免云端长时间挂起
 _MAX_CHAT_TOTAL_SECONDS = 60.0
 
+# 整轮工具循环总耗时上限（阶段 2 使用，本阶段只提供常量与辅助函数）
+_MAX_TOOL_LOOP_SECONDS = 90.0
+
+
+# ================================================================
+# 模块级工具函数
+# ================================================================
+
+def _strip_none(obj):
+    """递归剔除 dict / list 中值为 None 的键。"""
+    if isinstance(obj, dict):
+        return {k: _strip_none(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_none(v) for v in obj]
+    return obj
+
+
+def sanitize_assistant_message(msg: dict) -> dict:
+    """清洗 assistant 消息，供追加回消息列表。
+
+    递归剔除值为 None 的键，只保留 role / content / tool_calls 三个顶层字段。
+    tool_calls 内部只保留 id / type / function（function 内保留 name / arguments）。
+    阶段 2 工具循环 append 回消息列表时统一走此函数，避免冗余字段导致 400。
+    """
+    stripped = _strip_none(msg)
+
+    cleaned: dict = {}
+    if "role" in stripped:
+        cleaned["role"] = stripped["role"]
+    if "content" in stripped:
+        cleaned["content"] = stripped["content"]
+    else:
+        cleaned["content"] = None
+
+    if "tool_calls" in stripped and stripped["tool_calls"]:
+        cleaned_tcs: list[dict] = []
+        for tc in stripped["tool_calls"]:
+            tc_clean: dict = {}
+            if "id" in tc:
+                tc_clean["id"] = tc["id"]
+            if "type" in tc:
+                tc_clean["type"] = tc["type"]
+            if "function" in tc:
+                fn: dict = {}
+                if "name" in tc["function"]:
+                    fn["name"] = tc["function"]["name"]
+                if "arguments" in tc["function"]:
+                    fn["arguments"] = tc["function"]["arguments"]
+                if fn:
+                    tc_clean["function"] = fn
+            if tc_clean:
+                cleaned_tcs.append(tc_clean)
+        if cleaned_tcs:
+            cleaned["tool_calls"] = cleaned_tcs
+
+    return cleaned
+
+
+def make_deadline() -> float:
+    """返回工具循环的截止时间（perf_counter 值）。"""
+    return time.perf_counter() + _MAX_TOOL_LOOP_SECONDS
+
+
+def check_deadline(deadline: float) -> bool:
+    """检查是否已超过整轮工具循环耗时上限。返回 True 表示未超时。"""
+    return time.perf_counter() < deadline
+
 
 class LLMClient:
     """DeepSeek Chat 客户端（单例）。"""
@@ -87,10 +154,13 @@ class LLMClient:
     # ------------------------------------------------------------------
     # 内部：单次请求，重试 2 次 + 固定 1s 退避 + 60s 总耗时上限，返回结构化 dict
     # ------------------------------------------------------------------
-    def _do_chat(self, system: str, user: str, temperature: float, max_tokens: int) -> dict:
+    def _do_chat(self, messages: list[dict], temperature: float, max_tokens: int,
+                 tools: list | None = None) -> dict:
         """发送请求，内部重试 2 次（固定 1s 退避），单次调用总耗时上限 60s。
-        返回 {"content": str, "prompt_tokens": int, "completion_tokens": int,
+        返回 {"content": str, "tool_calls": list[dict], "raw_message": dict|None,
+               "prompt_tokens": int, "completion_tokens": int,
                "cache_hit_tokens": int, "latency_ms": float, "finish_reason": str}
+        raw_message 落地前已经过 sanitize_assistant_message 清洗。
         """
         deadline = time.perf_counter() + _MAX_CHAT_TOTAL_SECONDS
         for attempt in range(2):
@@ -100,19 +170,21 @@ class LLMClient:
                 raise RuntimeError(f"LLM call exceeded {_MAX_CHAT_TOTAL_SECONDS:.0f}s total budget")
             try:
                 t0 = time.perf_counter()
-                resp = self._client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                kwargs: dict = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if tools:
+                    kwargs["tools"] = tools
+
+                resp = self._client.chat.completions.create(**kwargs)
                 elapsed_ms = (time.perf_counter() - t0) * 1000
                 self._total_time += elapsed_ms / 1000
 
-                content = resp.choices[0].message.content or ""
+                choice = resp.choices[0]
+                content = choice.message.content or ""
                 usage = resp.usage
                 prompt_tokens = 0
                 completion_tokens = 0
@@ -129,10 +201,38 @@ class LLMClient:
                     if hasattr(usage, 'prompt_tokens_details') and usage.prompt_tokens_details is not None:
                         cache_hit_tokens = getattr(usage.prompt_tokens_details, 'cached_tokens', 0) or 0
                 finish_reason = "stop"
-                if resp.choices and resp.choices[0].finish_reason:
-                    finish_reason = resp.choices[0].finish_reason
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                # 序列化 tool_calls
+                tool_calls: list[dict] = []
+                msg = choice.message
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool_calls.append({
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                        })
+
+                # 序列化并清洗 raw_message
+                raw_message: dict | None = None
+                try:
+                    raw_dict = msg.model_dump()
+                except AttributeError:
+                    try:
+                        raw_dict = msg.dict()
+                    except AttributeError:
+                        raw_dict = {"role": msg.role, "content": content}
+                raw_message = sanitize_assistant_message(raw_dict)
+
                 return {
                     "content": content,
+                    "tool_calls": tool_calls,
+                    "raw_message": raw_message,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "cache_hit_tokens": cache_hit_tokens,
@@ -184,93 +284,110 @@ class LLMClient:
         return lines
 
     # ------------------------------------------------------------------
-    # 公开接口：chat() 签名向后兼容
+    # 私有：核心降级/冷却/恢复/trace 逻辑
     # ------------------------------------------------------------------
-    def chat(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 1500,
-             prompt_id: str = "", prompt_version: str = "", caller: str = "") -> str:
-        """发送对话请求。"""
-        if prompt_id:
-            self.logger.debug("prompt=%s v=%s", prompt_id, prompt_version)
-        self._total_calls += 1
-
+    def _call_with_degradation(self, messages: list[dict], temperature: float,
+                               max_tokens: int, tools: list | None,
+                               trace_base: dict) -> dict:
+        """核心 LLM 调用：包含降级/冷却/恢复/trace 全部逻辑。
+        返回 {"content", "tool_calls", "raw_message", "finish_reason",
+               "is_mock", "prompt_tokens", "completion_tokens",
+               "cache_hit_tokens", "latency_ms"}
+        """
         t_start = time.perf_counter()
-        trace_base = {
-            "caller": caller,
-            "prompt_id": prompt_id,
-            "prompt_version": prompt_version,
-            "model": self.model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "system": system,
-            "user": user,
-        }
+
+        # --- 辅助：从 messages 取最后一条 user 内容用于 mock ---
+        def _last_user_content() -> str:
+            for m in reversed(messages):
+                if isinstance(m, dict) and m.get("role") == "user":
+                    return m.get("content", "")
+            return ""
+
+        # --- 辅助：构建 mock 结果 ---
+        def _build_mock_result() -> dict:
+            user_text = _last_user_content()
+            response = self._mock_response("", user_text)
+            lat = (time.perf_counter() - t_start) * 1000
+            return {
+                "content": response, "tool_calls": [], "raw_message": None,
+                "finish_reason": "", "is_mock": True,
+                "prompt_tokens": 0, "completion_tokens": 0,
+                "cache_hit_tokens": 0, "latency_ms": lat,
+            }
+
+        # --- 辅助：从 _do_chat 返回值构建完整结果 ---
+        def _build_result(resp: dict, is_mock: bool) -> dict:
+            return {
+                "content": resp["content"],
+                "tool_calls": resp.get("tool_calls", []),
+                "raw_message": resp.get("raw_message"),
+                "finish_reason": resp["finish_reason"],
+                "is_mock": is_mock,
+                "prompt_tokens": resp["prompt_tokens"],
+                "completion_tokens": resp["completion_tokens"],
+                "cache_hit_tokens": resp["cache_hit_tokens"],
+                "latency_ms": resp["latency_ms"],
+            }
+
+        # --- 辅助：设置 _meta 并写入 trace ---
+        def _finalize(result: dict, is_mock: bool, error: str | None) -> None:
+            self._meta = {
+                "finish_reason": result["finish_reason"],
+                "is_mock": is_mock,
+                "prompt_tokens": result["prompt_tokens"],
+                "completion_tokens": result["completion_tokens"],
+                "cache_hit_tokens": result["cache_hit_tokens"],
+                "latency_ms": result["latency_ms"],
+            }
+            self._write_trace(
+                response=result["content"],
+                is_mock=is_mock,
+                error=error,
+                prompt_tokens=result["prompt_tokens"],
+                completion_tokens=result["completion_tokens"],
+                cache_hit_tokens=result["cache_hit_tokens"],
+                finish_reason=result["finish_reason"],
+                latency_ms=result["latency_ms"],
+                # tool_calls 写入 trace
+                tool_calls=json.dumps(result.get("tool_calls", []), ensure_ascii=False),
+                has_tool_call=bool(result.get("tool_calls")),
+                **trace_base,
+            )
 
         # --- 降级或 client 未初始化 ---
         if self.is_mock or self._client is None:
 
             # 恢复冷却：距上次失败不足 60s 直接 mock，不卡重试
             if self._client is not None and time.perf_counter() - self._last_failure_ts < 60:
-                response = self._mock_response(system, user)
-                lat = (time.perf_counter() - t_start) * 1000
-                self._meta = {"finish_reason": "", "is_mock": True, "prompt_tokens": 0, "completion_tokens": 0, "cache_hit_tokens": 0, "latency_ms": lat}
-                self._write_trace(
-                    response=response, is_mock=True, error=None,
-                    prompt_tokens=0, completion_tokens=0, cache_hit_tokens=0,
-                    finish_reason="",
-                    latency_ms=lat,
-                    **trace_base,
-                )
-                return response
+                result = _build_mock_result()
+                _finalize(result, True, None)
+                return result
 
             # 尝试恢复
             if self._client is not None:
                 try:
-                    resp = self._do_chat(system, user, temperature, max_tokens)
+                    resp = self._do_chat(messages, temperature, max_tokens, tools)
                     self._consecutive_failures = 0
                     self.is_mock = False
-                    self._meta = {"finish_reason": resp["finish_reason"], "is_mock": False, "prompt_tokens": resp["prompt_tokens"], "completion_tokens": resp["completion_tokens"], "cache_hit_tokens": resp["cache_hit_tokens"], "latency_ms": resp["latency_ms"]}
                     self.logger.info("LLM recovered from mock mode")
-                    self._write_trace(
-                        response=resp["content"], is_mock=False, error=None,
-                        prompt_tokens=resp["prompt_tokens"],
-                        completion_tokens=resp["completion_tokens"],
-                        cache_hit_tokens=resp["cache_hit_tokens"],
-                        finish_reason=resp["finish_reason"],
-                        latency_ms=resp["latency_ms"],
-                        **trace_base,
-                    )
-                    return resp["content"]
+                    result = _build_result(resp, False)
+                    _finalize(result, False, None)
+                    return result
                 except Exception as exc:
                     self.logger.debug("Recovery attempt failed: %s", exc)
                     self._last_failure_ts = time.perf_counter()
 
-            response = self._mock_response(system, user)
-            lat = (time.perf_counter() - t_start) * 1000
-            self._meta = {"finish_reason": "", "is_mock": True, "prompt_tokens": 0, "completion_tokens": 0, "cache_hit_tokens": 0, "latency_ms": lat}
-            self._write_trace(
-                response=response, is_mock=True, error=None,
-                prompt_tokens=0, completion_tokens=0, cache_hit_tokens=0,
-                finish_reason="",
-                latency_ms=lat,
-                **trace_base,
-            )
-            return response
+            result = _build_mock_result()
+            _finalize(result, True, None)
+            return result
 
         # --- 正常模式 ---
         try:
-            resp = self._do_chat(system, user, temperature, max_tokens)
+            resp = self._do_chat(messages, temperature, max_tokens, tools)
             self._consecutive_failures = 0
-            self._meta = {"finish_reason": resp["finish_reason"], "is_mock": False, "prompt_tokens": resp["prompt_tokens"], "completion_tokens": resp["completion_tokens"], "cache_hit_tokens": resp["cache_hit_tokens"], "latency_ms": resp["latency_ms"]}
-            self._write_trace(
-                response=resp["content"], is_mock=False, error=None,
-                prompt_tokens=resp["prompt_tokens"],
-                completion_tokens=resp["completion_tokens"],
-                cache_hit_tokens=resp["cache_hit_tokens"],
-                finish_reason=resp["finish_reason"],
-                latency_ms=resp["latency_ms"],
-                **trace_base,
-            )
-            return resp["content"]
+            result = _build_result(resp, False)
+            _finalize(result, False, None)
+            return result
         except Exception as exc:
             self.logger.error("LLM call failed after 3 retries: %s", exc)
             self._consecutive_failures += 1
@@ -281,17 +398,81 @@ class LLMClient:
                     "LLM degraded to MOCK after %d consecutive failures",
                     self._consecutive_failures,
                 )
-            response = self._mock_response(system, user)
-            lat = (time.perf_counter() - t_start) * 1000
-            self._meta = {"finish_reason": "", "is_mock": True, "prompt_tokens": 0, "completion_tokens": 0, "cache_hit_tokens": 0, "latency_ms": lat}
-            self._write_trace(
-                response=response, is_mock=True, error=str(exc),
-                prompt_tokens=0, completion_tokens=0, cache_hit_tokens=0,
-                finish_reason="",
-                latency_ms=lat,
-                **trace_base,
-            )
-            return response
+            result = _build_mock_result()
+            _finalize(result, True, str(exc))
+            return result
+
+    # ------------------------------------------------------------------
+    # 公开接口：chat_messages() —— 多轮消息 + function calling
+    # ------------------------------------------------------------------
+    def chat_messages(self, messages: list[dict], temperature: float = 0.3,
+                      max_tokens: int = 1500, tools: list | None = None,
+                      prompt_id: str = "", prompt_version: str = "",
+                      caller: str = "") -> dict:
+        """发送多轮对话请求，支持 function calling。
+
+        Args:
+            messages: OpenAI 格式的消息列表 [{"role":..., "content":...}, ...]
+            temperature: 采样温度
+            max_tokens: 最大输出 token 数
+            tools: OpenAI 格式的 tools 定义列表，非空时传给 LLM
+            prompt_id: 提示词 ID（用于 trace）
+            prompt_version: 提示词版本（用于 trace）
+            caller: 调用方标识（用于 trace）
+
+        Returns:
+            {"content", "tool_calls", "raw_message", "finish_reason",
+             "is_mock", "prompt_tokens", "completion_tokens",
+             "cache_hit_tokens", "latency_ms"}
+        """
+        if prompt_id:
+            self.logger.debug("prompt=%s v=%s", prompt_id, prompt_version)
+        self._total_calls += 1
+
+        # 从 messages 提取 system / user 用于向后兼容的 trace 字段
+        system = ""
+        user = ""
+        for m in messages:
+            if isinstance(m, dict):
+                if m.get("role") == "system":
+                    system = m.get("content", "")
+                elif m.get("role") == "user":
+                    user = m.get("content", "")
+
+        trace_base = {
+            "caller": caller,
+            "prompt_id": prompt_id,
+            "prompt_version": prompt_version,
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            # 旧字段：向后兼容 trace 看板
+            "system": system,
+            "user": user,
+            # 新字段：多轮消息支持
+            "messages": messages,
+            "n_messages": len(messages),
+        }
+
+        return self._call_with_degradation(messages, temperature, max_tokens,
+                                           tools, trace_base)
+
+    # ------------------------------------------------------------------
+    # 公开接口：chat() 签名向后兼容
+    # ------------------------------------------------------------------
+    def chat(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 1500,
+             prompt_id: str = "", prompt_version: str = "", caller: str = "") -> str:
+        """发送对话请求。签名向后兼容，内部委托给 chat_messages()。"""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        result = self.chat_messages(messages, temperature=temperature,
+                                    max_tokens=max_tokens,
+                                    prompt_id=prompt_id,
+                                    prompt_version=prompt_version,
+                                    caller=caller)
+        return result["content"]
 
     def chat_with_meta(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 1500,
                        prompt_id: str = "", prompt_version: str = "", caller: str = "") -> dict:
