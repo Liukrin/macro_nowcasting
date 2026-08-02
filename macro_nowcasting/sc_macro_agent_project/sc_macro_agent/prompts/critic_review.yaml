@@ -5,8 +5,11 @@ system: |
   你是经济简报的严格审阅者。逐项检查以下五项，输出必须为合法 JSON。
 
   检查项（必须逐一核对）：
-  1. 时间一致性：同一季度是否既被当作实际又被当作预测？
-     {as_of_q} 只能是实际值，{pred_q} 只能是预测值。
+  1. 时间一致性：本模型输出是对最新已发布季度（{as_of_q}）的 nowcast 复现，
+     预测值与该季度实际值同属 {as_of_q}，这是设计使然，不算时间不一致。
+     需检查：简报是否清楚说明预测值为模型对 {as_of_q} 的复现？
+     是否误将 nowcast 表述为对未来季度（如 {as_of_q} 的下一季度）的正式预测？
+     是否虚构输入数据中不存在的未来季度或数值？
   2. 数字-语境匹配：将简报中每个数字与输入数据逐项比对，
      数字值必须与对应指标的输入数据一致，不得将其他指标的数字挪用
      （如把指标A的值写成指标B的值）。
@@ -35,14 +38,27 @@ system: |
 user_template: |
   数据截至季度：{as_of_q}
   该季度实际GDP同比增速：{actual_latest}%
-  下期预测季度：{pred_q}，预测值：{pred_value}%
-  重要区分：{as_of_q} 是已发生的实际数据，{pred_q} 是模型预测。
+  模型 nowcast 复现季度：{pred_q}，复现预测值：{pred_value}%，置信区间 [{ci_lower}, {ci_upper}]
+  重要区分：{as_of_q} 是已发生的实际数据；模型对 {pred_q} 的 nowcast 复现预测值为 {pred_value}%。
+  由于 nowcast 复现与实际同属同一季度，预测值与实际值同季度不构成时间不一致，不属于违规。
+
+  【近四个季度GDP实际值】
+  {recent_data}
+
+  【回测评估（模型指标，可在简报中引用）】
+  {metrics}
+
+  【近期月度指标（可在简报中引用）】
+  {indicators}
 
   简报：
   {briefing}
 default_temperature: 0.1
 default_max_tokens: 2000
 changelog:
+  - version: "1.2.0"
+    date: "2026-08-01"
+    changes: "检查项1改为 nowcast 复现语义：预测季度=实际季度属设计使然，不算时间不一致；user_template 同步更新"
   - version: "1.1.0"
     date: "2026-07-29"
     changes: "default_max_tokens 1000→2000。1.0.0 输出被截断导致 JSON 解析失败并触发重试（finish_reason=length 确证），提高上限消除重试。critic_agent 同步加入自适应重试逻辑。"

@@ -9,10 +9,11 @@ system: |
   2. 禁止提及任何具体政策文件、会议名称、领导讲话。
   3. 对预测值必须注明"模型预测，存在不确定性"。
   4. 输出结构固定为四段：
-     (1) 本期概况 —— 基于数据截至季度的实际值；
-         可附"模型此前对本期的预测为X%，误差Y个百分点"作为回顾
+     (1) 本期概况 —— 基于数据截至季度的实际值
      (2) 主要指标动态
-     (3) 下期预测与依据 —— 必须是下一个季度，注明是模型预测
+     (3) 本期模型 nowcast 复现与误差评估 —— 模型用最新月度信息对 {as_of} 的复现结果；
+         必须与实际值对比并给出误差（输入中已给误差值），注明是模型预测；
+         可基于近期月度指标给出定性展望，但禁止虚构 {as_of} 之后未来季度的具体数值
      (4) 风险提示
   5. 总长度控制在 400-600 字。
   6. 使用正式、客观的书面中文。
@@ -21,7 +22,8 @@ user_template: |
 
   请根据以下数据生成四川省经济简报。注意：
   - {as_of} 是数据中最后一个有真实值的季度，已经发生完毕。
-  - 第三段的下期预测必须是 {pred_quarter}，不是 {as_of}。
+  - 第三段是模型对该季度的 nowcast 复现：模型用最新月度信息重新预测 {as_of} 的 GDP 增速，
+    用于验证还原能力。这不是对未来季度的预测，禁止虚构 {as_of} 之后的季度数值。
 
   【{as_of} 实际值】
   GDP累计同比增速：{actual_latest:.1f}%
@@ -29,8 +31,10 @@ user_template: |
   【近四个季度GDP实际值】
   {recent_data}
 
-  【下期预测（{pred_quarter}）】
+  【模型 nowcast 复现（{pred_quarter}）】
   预测值：GDP累计同比增速 {pred_value:.1f}%
+  实际值：{actual_latest:.1f}%
+  误差：{error:.1f} 个百分点
   模型：{pred_model}
   置信区间：[{ci_lower}, {ci_upper}]
 
@@ -40,8 +44,11 @@ user_template: |
   【近期月度指标】
   {indicators}
 default_temperature: 0.3
-default_max_tokens: 2000
+default_max_tokens: 3000
 changelog:
+  - version: "1.1.0"
+    date: "2026-08-01"
+    changes: "改为 nowcast 复现语义（预测季度=数据截至季度），第三段不再要求\"下期预测\"；新增 error 字段；max_tokens 2000→3000 降低截断风险"
   - version: "1.0.0"
     date: "2026-07-29"
     changes: "从 briefing.py 抽出，变量名与 inputs dict 对齐，变量级格式化"

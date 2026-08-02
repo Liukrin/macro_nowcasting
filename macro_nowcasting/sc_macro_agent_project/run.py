@@ -54,10 +54,12 @@ def main() -> None:
         engine.build_features()
         result = engine.train()
     elif args.command == "backtest":
-        engine.run_agent(goal="audit_build_train_backtest_report", save_artifacts=False)
+        # 只用 audit_build_train，避免 goal 里含 backtest/report 导致重复执行
+        engine.run_agent(goal="audit_build_train", save_artifacts=False)
         result = engine.backtest()
     elif args.command == "predict":
-        engine.run_agent(goal="audit_build_train_predict", save_artifacts=False)
+        # 只用 audit_build_train，避免 goal 里含 predict 导致 predict_next 跑两遍
+        engine.run_agent(goal="audit_build_train", save_artifacts=False)
         result = engine.predict_next()
     elif args.command == "agent":
         from sc_macro_agent.agents import AgentOrchestrator

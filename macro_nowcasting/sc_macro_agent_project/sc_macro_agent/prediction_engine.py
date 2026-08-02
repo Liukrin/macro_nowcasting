@@ -140,6 +140,30 @@ class PredictionEngine:
         step.close("completed", info)
         return info
 
+    def _apply_target_transform(self, panel: pd.DataFrame) -> tuple[pd.DataFrame, Optional[pd.Series]]:
+        """将 level 目标面板转为训练/回测使用的目标空间。
+
+        统一 train() 与 backtest() 的目标变换，避免两者目标空间不一致。
+
+        Returns:
+            (panel, base_series)：
+            - delta 变换：target_value 变为 Δy_t = y_t - y_{t-1}，丢弃无差分的第一行；
+              base_series 记录每行对应的 y_{t-1}，用于预测后加回 level。
+            - level 变换：面板原样返回，base_series 为 None。
+        """
+        assert self.feature_artifacts is not None
+        target_col = self.feature_artifacts.target_column
+        panel = panel.sort_values("quarter_end").reset_index(drop=True).copy()
+        if self.config.features.target_transform == "delta":
+            y_raw = panel[target_col].astype(float).copy()
+            base_series = y_raw.shift(1).iloc[1:]
+            delta_y = y_raw.diff().iloc[1:]
+            panel = panel.iloc[1:].copy()
+            panel[target_col] = delta_y.values
+            base_series.index = panel.index
+            return panel, base_series
+        return panel, None
+
     def _train_valid_split(self, panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         panel = panel.sort_values("quarter_end").reset_index(drop=True)
         quarters = sorted(panel["quarter_end"].unique().tolist())
@@ -169,13 +193,9 @@ class PredictionEngine:
         feature_cols = self.feature_artifacts.feature_columns
         target_col = self.feature_artifacts.target_column
 
+        # 统一目标变换：delta / level，与 backtest() 保持一致
         # Delta parameterization: 将 level 目标转为差分序列用于训练
-        # 与冻结的 backtest 评估配置保持一致
-        if self.config.features.target_transform == "delta":
-            y_raw = panel[target_col].copy()
-            delta_y = y_raw.diff().iloc[1:]
-            panel = panel.iloc[1:].copy()
-            panel[target_col] = delta_y.values
+        panel, _ = self._apply_target_transform(panel)
 
         train_df, valid_df = self._train_valid_split(panel)
         X_train = train_df[feature_cols]
@@ -214,12 +234,18 @@ class PredictionEngine:
         panel = self.feature_artifacts.training_panel.copy()
         feature_cols = self.feature_artifacts.feature_columns
 
+        # 统一目标变换：模型在 delta 空间训练/预测，窗口结束后用 y_{t-1} 加回 level，
+        # 使 metrics 的 RMSE 单位仍为"百分点"
+        panel, base_series = self._apply_target_transform(panel)
+
         result = self.backtester.run(
             panel=panel,
             feature_cols=feature_cols,
             target_col=self.feature_artifacts.target_column,
             selected_model_name=self.selected_model_name,
+            base_series=base_series,
         )
+        result["target_transform"] = self.config.features.target_transform
         self.backtest_result = result
         step.close("completed", result)
         return result
@@ -235,19 +261,25 @@ class PredictionEngine:
         assert self.selected_model is not None
         panel = self.feature_artifacts.training_panel.copy()
         feature_cols = self.feature_artifacts.feature_columns
-        latest_row = panel.sort_values("quarter_end").tail(1).copy()
-        current_quarter = pd.to_datetime(latest_row["quarter_end"].iloc[0])
-        next_quarter = (current_quarter + pd.offsets.QuarterEnd()).to_pydatetime()
+        panel = panel.sort_values("quarter_end").reset_index(drop=True)
+        latest_row = panel.tail(1).copy()
+        nowcast_quarter = pd.to_datetime(latest_row["quarter_end"].iloc[0])
 
         # Raw model prediction (delta space if target_transform='delta')
         raw_pred = float(self.selected_model.predict(latest_row[feature_cols])[0])
 
         # Delta add-back: y_hat = y_{t-1} + delta_hat
+        # 训练面板中 X_t 与 y_t 同属第 t 季度（nowcast 映射，无 h=1 错位），
+        # 因此差分基准应为 y_{t-1}（panel 倒数第二行的 target_value），而非 y_t。
+        prediction_value = raw_pred
+        delta_add_back_applied = False
         if self.config.features.target_transform == "delta":
-            y_t_minus_1 = float(latest_row["target_value"].iloc[0])
-            prediction_value = y_t_minus_1 + raw_pred
-        else:
-            prediction_value = raw_pred
+            if len(panel) >= 2:
+                y_t_minus_1 = float(panel.iloc[-2]["target_value"])
+                prediction_value = y_t_minus_1 + raw_pred
+                delta_add_back_applied = True
+            else:
+                prediction_value = raw_pred
 
         # Chronos residual correction (lazy load on first call)
         chronos_correction = 0.0
@@ -269,22 +301,33 @@ class PredictionEngine:
             except Exception:
                 pass
 
+        actual_value = float(latest_row["target_value"].iloc[0])
+        notes = [
+            "prediction_generated_from_latest_available_quarter_features",
+            "if_real_data_is_short_treat_as_demo_nowcast_not_production_forecast",
+            "本预测为对最新已发布季度的 nowcast 复现，用于验证模型在真实月度信息集下的还原能力",
+        ]
+        if self.config.features.target_transform == "delta" and not delta_add_back_applied:
+            notes.append("样本不足，未进行 delta 差分加回，输出为模型原始预测")
+        if not self.backtest_result:
+            notes.append("未运行回测，不提供置信区间")
+
         result = {
             "target_indicator": self.config.features.target_indicator,
-            "prediction_quarter": pretty_quarter(next_quarter),
-            "based_on_latest_quarter": pretty_quarter(current_quarter),
+            "nowcast_quarter": pretty_quarter(nowcast_quarter),
+            "prediction_quarter": pretty_quarter(nowcast_quarter),  # 别名，兼容旧字段
+            "based_on_latest_quarter": pretty_quarter(nowcast_quarter),
             "model_name": self.selected_model.model_name,
             "prediction_value": prediction_value,
-            "benchmark_value": float(latest_row["target_value"].iloc[0]),
+            "actual_value": actual_value,
+            "nowcast_error": prediction_value - actual_value,
+            "benchmark_value": actual_value,
             "confidence_interval": self._build_confidence_interval(prediction_value),
             "top_features": self.selected_model.get_feature_importance(10),
             "chronos_correction": chronos_correction,
             "chronos_state": self._chronos_state,
             "target_transform": self.config.features.target_transform,
-            "notes": [
-                "prediction_generated_from_latest_available_quarter_features",
-                "if_real_data_is_short_treat_as_demo_nowcast_not_production_forecast",
-            ],
+            "notes": notes,
         }
         if hasattr(self.selected_model, "predict_components"):
             comp = self.selected_model.predict_components(latest_row[feature_cols])
@@ -299,12 +342,14 @@ class PredictionEngine:
         self.latest_prediction = result
         return result
 
-    def _build_confidence_interval(self, point_pred: float) -> Dict[str, Any]:
+    def _build_confidence_interval(self, point_pred: float) -> Optional[Dict[str, Any]]:
         # 1.64 * backtest_RMSE ≈ 90% empirical interval
-        import numpy as np
-        backtest_rmse = 0.94  # default from frozen eval
-        if self.backtest_result and self.backtest_result.get("metrics"):
-            backtest_rmse = float(self.backtest_result["metrics"].get("rmse", backtest_rmse))
+        # 未运行回测时不提供置信区间（返回 None），不再使用硬编码的 RMSE 魔数
+        if not self.backtest_result or not self.backtest_result.get("metrics"):
+            return None
+        backtest_rmse = float(self.backtest_result["metrics"].get("rmse"))
+        if backtest_rmse <= 0:
+            return None
         spread = max(0.3, 1.64 * backtest_rmse)
         return {
             "lower": round(point_pred - spread, 2),

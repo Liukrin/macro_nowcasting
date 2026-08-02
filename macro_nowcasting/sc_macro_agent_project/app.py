@@ -17,6 +17,17 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# --- 诊断计时器（仅本步诊断用；默认关闭，SC_MACRO_DEBUG_TIMING=true 时开启） ---
+import os as _os
+import time as _time
+_TIMING_ON = _os.environ.get("SC_MACRO_DEBUG_TIMING", "").lower() == "true"
+_T0 = _time.perf_counter()
+def _tick(label: str) -> None:
+    if not _TIMING_ON:
+        return
+    import sys
+    print(f"[TIMING] {label}: {_time.perf_counter() - _T0:.2f}s", file=sys.stderr, flush=True)
+
 # --- Phase 2: all other imports, with error display ---
 try:
     from pathlib import Path
@@ -24,6 +35,14 @@ try:
 
     from dotenv import load_dotenv
     load_dotenv()
+
+    import os
+    # Streamlit Secrets 桥接：本地走 .env，云端走 st.secrets（client.py 不依赖 streamlit）
+    try:
+        if "DEEPSEEK_API_KEY" in st.secrets and not os.environ.get("DEEPSEEK_API_KEY"):
+            os.environ["DEEPSEEK_API_KEY"] = st.secrets["DEEPSEEK_API_KEY"]
+    except Exception:
+        pass
 
     import pandas as pd
     import plotly.express as px
@@ -36,6 +55,8 @@ except Exception as _import_err:
     st.error(f"## 导入失败: {_import_err}")
     st.code(traceback.format_exc())
     st.stop()
+
+_tick("imports_done")
 
 # ==================== 设计系统 ====================
 COLORS = {
@@ -331,11 +352,15 @@ def render_warning_pills(items: Iterable[str]) -> None:
         st.markdown(html, unsafe_allow_html=True)
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="正在初始化引擎…")
 def load_engine() -> PredictionEngine:
-    import os
+    import os, sys
+    _tick("load_engine:enter")
+    if _TIMING_ON:
+        print(f"[ENV] SC_MACRO_FULL_PIPELINE={os.environ.get('SC_MACRO_FULL_PIPELINE')}", file=sys.stderr, flush=True)
     config = AppConfig.from_env()
     engine = PredictionEngine(config=config)
+    _tick("load_engine:engine_constructed")
     from sc_macro_agent.llm.client import LLMClient
     LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
     # Cloud 环境默认轻量模式：只审计数据+构建特征，跳过训练和回测（资源不足）
@@ -343,21 +368,32 @@ def load_engine() -> PredictionEngine:
     goal = "audit_build"
     if os.environ.get("SC_MACRO_FULL_PIPELINE", "").lower() == "true":
         goal = "audit_build_train_backtest_report"
+    _tick("load_engine:before_run_agent")
     try:
         engine.run_agent(goal=goal, save_artifacts=False)
     except Exception as e:
         import sys
         print(f"[WARN] Pipeline init failed: {e}", file=sys.stderr)
         engine._init_error = str(e)
+    _tick("load_engine:after_run_agent")
+    _tick("load_engine:return")
     return engine
 
 
-@st.cache_data(show_spinner=False)
+# 共享可变状态说明：
+# st.cache_resource 返回跨会话共享的同一个对象引用，load_view_data 返回的 dict
+# 及其中的 engine 会被所有会话共用。
+#   - 本项目为单人演示场景，共享引擎可接受；
+#   - 生产环境需改为每会话独立实例或加锁（该条已同步至 known_limitations.md）。
+@st.cache_resource(show_spinner="正在加载模型与数据，首次约需 10 秒…")
 def load_view_data(_: int) -> Dict[str, Any]:
+    _tick("load_view_data:enter")
     engine = load_engine()
     try:
         status = engine.get_status()
+        _tick("load_view_data:after_get_status")
         summary = engine.summarize()
+        _tick("load_view_data:after_summarize")
     except Exception:
         status = {"phase": "init_error", "completed": False}
         summary = {}
@@ -365,9 +401,11 @@ def load_view_data(_: int) -> Dict[str, Any]:
         prediction = summary.get("prediction") or engine.predict_next()
     except Exception:
         prediction = None
+    _tick("load_view_data:after_predict_next")
     audit_result = getattr(engine, "audit_result", None) or {}
     backtest = getattr(engine, "backtest_result", None) or {}
     factor_summary = engine.get_factor_summary() if hasattr(engine, "get_factor_summary") else {}
+    _tick("load_view_data:after_factor_summary")
     try:
         snapshot = engine.data_manager.get_latest_snapshot()
     except Exception:
@@ -376,10 +414,12 @@ def load_view_data(_: int) -> Dict[str, Any]:
         availability = engine.data_manager.get_data_availability()
     except Exception:
         availability = {"items": []}
+    _tick("load_view_data:after_data_availability")
     try:
         signal_overview = engine.data_manager.build_training_signal_overview()
     except Exception:
         signal_overview = {}
+    _tick("load_view_data:after_signal_overview")
     leaderboard_df = safe_df(summary.get("leaderboard", []))
     top_features_df = safe_df(summary.get("top_features", []))
     agent_steps_df = safe_df(summary.get("agent", {}).get("steps", []))
@@ -401,6 +441,7 @@ def load_view_data(_: int) -> Dict[str, Any]:
         except Exception:
             pass
 
+    _tick("load_view_data:return")
     return {
         "engine": engine,
         "status": status,
@@ -849,7 +890,8 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
             unsafe_allow_html=True)
         pred_val = prediction.get("prediction_value", 0)
         pred_q = prediction.get("prediction_quarter", "?")
-        ci = prediction.get("confidence_interval", {})
+        # 轻量模式下未跑回测，confidence_interval 可能为 None（key 存在但值为 None），需兜底
+        ci = prediction.get("confidence_interval") or {}
         st.sidebar.markdown(
             f'<div style="font-size: 1.2rem; font-weight: 800; color: {COLORS["accent_cyan"]};">{pred_q}: {pred_val:.1f}%</div>',
             unsafe_allow_html=True)
@@ -1067,6 +1109,25 @@ def render_nowcast(data: Dict[str, Any]) -> None:
 
     st.markdown(
         "<div style='height: 1px; background: linear-gradient(90deg, transparent, #2a2e37, transparent); margin: 2rem 0;'></div>",
+        unsafe_allow_html=True)
+
+    # Chronos 残差修正状态（默认开启，不改变其行为，仅做状态展示）
+    chronos_state = prediction.get("chronos_state", "unknown")
+    try:
+        chronos_correction = float(prediction.get("chronos_correction", 0.0))
+    except (TypeError, ValueError):
+        chronos_correction = 0.0
+    if chronos_state == "ready":
+        chronos_text = f"Chronos 残差修正：已启用，修正量 {chronos_correction:+.3f} 个百分点"
+        chronos_color = COLORS["accent_cyan"]
+    elif chronos_state == "failed":
+        chronos_text = "Chronos 残差修正：模型加载失败，已跳过（不影响主预测）"
+        chronos_color = COLORS["accent_amber"]
+    else:
+        chronos_text = "Chronos 残差修正：未加载"
+        chronos_color = COLORS["text_muted"]
+    st.markdown(
+        f'<div style="padding:0.5rem 1rem; background:{COLORS["bg_tertiary"]}; border-radius:8px; font-size:0.85rem; color:{chronos_color};">{chronos_text}</div>',
         unsafe_allow_html=True)
 
     left, right = st.columns([1.2, 0.8], gap="large")
@@ -1346,6 +1407,13 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
         st.caption(f"Token: {u.get('total_tokens',0)} | 费用: ¥{u.get('est_cost_cny',0):.4f}")
 
 
+@st.cache_resource(show_spinner="正在构建检索索引…")
+def get_rag_service():
+    """RAG 服务模块级缓存：避免每次渲染重建 TF-IDF 语料。"""
+    from sc_macro_agent.rag_service import RAGService
+    return RAGService(config=load_engine().config)
+
+
 def render_rag_page(data: Dict[str, Any]) -> None:
     """RAG 数据问答页。"""
     render_section("Data Q&A", "AI 数据问答", "基于项目数据和模型产出的智能问答")
@@ -1355,8 +1423,7 @@ def render_rag_page(data: Dict[str, Any]) -> None:
     if not os.environ.get("DEEPSEEK_API_KEY"):
         st.warning("⚠️ 未设置 DEEPSEEK_API_KEY，回答为 mock 降级模式。设置环境变量后重启以启用真实 AI 问答。")
 
-    from sc_macro_agent.rag_service import RAGService
-    rag = RAGService(config=load_engine().config)
+    rag = get_rag_service()
 
     # Preset questions
     st.markdown("**快捷提问：**")
@@ -1677,16 +1744,20 @@ def render_llm_traces(_data: Dict[str, Any]) -> None:
 # main()
 # ================================================================
 def main() -> None:
+    _tick("main:enter")
     data = load_view_data(1)
+    _tick("main:after_load_view_data")
     page, refresh = sidebar_controls(data)
 
     if refresh:
         load_engine.clear()
         load_view_data.clear()
+        st.cache_resource.clear()
         st.cache_data.clear()
         st.rerun()
 
     render_hero(data)
+    _tick("main:after_render_hero")
 
     if "概览驾驶舱" in page:
         render_overview(data)

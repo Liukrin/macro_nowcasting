@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict
-
-import pandas as pd
+from typing import Any, Dict, Optional
 
 from ..config import AppConfig
 from ..prediction_engine import PredictionEngine
@@ -24,38 +22,52 @@ class ModelAgent:
         # Predict next quarter
         pred = engine.predict_next()
 
-        # Backtest metrics from frozen results
-        artifacts = self.config.data.resolve_artifact_dir(create=False)
-        bp = artifacts / "final" / "backtest_predictions.csv"
-        metrics = artifacts / "final" / "final_metrics.csv"
-        backtest_rmse = 0.0
-        vs_baseline = 1.0
-        dir_acc = 0.0
-        if metrics.exists():
-            df = pd.read_csv(metrics)
-            emc = df[df["model"] == "elastic_midas_chronos"]
-            lv = df[df["model"] == "last_value"]
-            if not emc.empty and not lv.empty:
-                backtest_rmse = float(emc.iloc[0]["rmse"])
-                lv_rmse = float(lv.iloc[0]["rmse"])
-                vs_baseline = backtest_rmse / lv_rmse if lv_rmse > 0 else 1.0
-                dir_acc = float(emc.iloc[0]["dir_acc"])
-        else:
-            self.logger.warning("Missing artifact: %s", metrics)
+        # Backtest metrics from engine.backtest_result（不依赖 artifacts/final，无则不填充 0）
+        if engine.backtest_result is None:
+            try:
+                engine.backtest()
+            except Exception as exc:
+                self.logger.warning("backtest failed: %s", exc)
 
-        # Caveats from known_limitations.md
-        caveats = _load_caveats(artifacts)
+        backtest_rmse = None
+        vs_baseline = None
+        dir_acc = None
+        if engine.backtest_result and engine.backtest_result.get("metrics"):
+            m = engine.backtest_result["metrics"]
+            backtest_rmse = float(m["rmse"])
+            dir_acc = float(m.get("direction_accuracy", 0.0))
+            baseline_rmse = _find_leaderboard_baseline(engine.leaderboard, "last_value")
+            if baseline_rmse is not None and backtest_rmse > 0:
+                vs_baseline = backtest_rmse / baseline_rmse
+        else:
+            self.logger.warning("No backtest_result available for ModelAgent metrics")
+
+        # Caveats from known_limitations.md（缺失时返回明确中文占位说明）
+        caveats = _load_caveats(self.config.data.resolve_artifact_dir(create=False))
 
         return {
-            "prediction_quarter": pred.get("prediction_quarter", "N/A"),
+            "prediction_quarter": pred.get("prediction_quarter", pred.get("nowcast_quarter", "N/A")),
+            "nowcast_quarter": pred.get("nowcast_quarter", pred.get("prediction_quarter", "N/A")),
             "prediction_value": pred.get("prediction_value", 0.0),
             "model_name": pred.get("model_name", "unknown"),
-            "confidence_interval": pred.get("confidence_interval", {}),
+            "confidence_interval": pred.get("confidence_interval") or {},
+            "actual_value": pred.get("actual_value"),
+            "nowcast_error": pred.get("nowcast_error"),
             "backtest_rmse": backtest_rmse,
-            "vs_baseline_ratio": round(vs_baseline, 3),
-            "direction_accuracy": round(dir_acc, 3),
+            "vs_baseline_ratio": round(vs_baseline, 3) if vs_baseline is not None else None,
+            "direction_accuracy": round(dir_acc, 3) if dir_acc is not None else None,
             "caveats": caveats,
         }
+
+
+def _find_leaderboard_baseline(leaderboard: list, baseline_model: str = "last_value") -> Optional[float]:
+    """从 leaderboard 中找基线的 RMSE。找不到返回 None（不伪造 0）。"""
+    for entry in leaderboard or []:
+        if isinstance(entry, dict) and entry.get("model_name") == baseline_model:
+            rmse = entry.get("rmse")
+            if rmse is not None:
+                return float(rmse)
+    return None
 
 
 def _load_caveats(artifacts_dir: Path) -> list:
@@ -63,7 +75,7 @@ def _load_caveats(artifacts_dir: Path) -> list:
     if not path.exists():
         logger = get_logger("sc_macro_agent.model_agent")
         logger.warning("Missing artifact: %s", path)
-        return ["无已知局限文档"]
+        return ["未生成《已知局限》说明文档；请以数据审计与回测结论为准，勿将本次预测视为官方口径"]
     text = path.read_text(encoding="utf-8")
     # Extract numbered limitation headers
     caveats = []

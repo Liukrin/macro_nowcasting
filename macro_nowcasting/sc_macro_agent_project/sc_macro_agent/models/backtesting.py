@@ -45,6 +45,7 @@ class ExpandingWindowBacktester:
         feature_cols: List[str],
         target_col: str = "target_value",
         selected_model_name: Optional[str] = None,
+        base_series: Optional[pd.Series] = None,
     ) -> Dict[str, Any]:
         if panel.empty:
             raise BacktestError("回测面板为空")
@@ -91,13 +92,23 @@ class ExpandingWindowBacktester:
                 linear = None
                 nonlinear = None
 
+            # 若在 delta 空间训练/预测，则用该窗口对应的 y_{t-1} 加回到 level，
+            # 使窗口指标与最终 metrics 的 RMSE 单位仍为"百分点"
+            if base_series is not None:
+                base_val = float(base_series.reindex(test_df.index).iloc[0])
+                actual_level = base_val + float(y_test.iloc[0])
+                pred_level = base_val + float(pred[0])
+            else:
+                actual_level = float(y_test.iloc[0])
+                pred_level = float(pred[0])
+
             windows.append(
                 BacktestWindowResult(
                     train_end=pretty_quarter(train_quarters[-1]),
                     test_quarter=pretty_quarter(test_quarter),
                     model_name=model.model_name,
-                    actual=float(y_test.iloc[0]),
-                    prediction=float(pred[0]),
+                    actual=actual_level,
+                    prediction=pred_level,
                     linear_component=linear,
                     nonlinear_component=nonlinear,
                 )

@@ -8,3 +8,9 @@ build/
 
 artifacts/
 .claude/
+
+# 密钥与本地临时文件（不得提交）
+.env
+.env.*
+*.log
+temp_trace_test/

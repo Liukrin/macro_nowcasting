@@ -18,11 +18,20 @@ class CriticAgent:
 
     def review(self, briefing: str, structured_inputs: Dict[str, Any]) -> Dict[str, Any]:
         """审查简报，返回结构化审阅结果。输出被截断时自适应提高 max_tokens 重试。"""
+        try:
+            pred_value = round(float(structured_inputs.get("pred_value")), 1)
+        except (TypeError, ValueError):
+            pred_value = "?"
         prompt = render("critic_review", version=self._prompt_version,
             as_of_q=structured_inputs.get("as_of_quarter", "?"),
             pred_q=structured_inputs.get("pred_quarter", "?"),
             actual_latest=structured_inputs.get("actual_latest", "?"),
-            pred_value=structured_inputs.get("pred_value", "?"),
+            pred_value=pred_value,
+            ci_lower=structured_inputs.get("ci_lower", "N/A"),
+            ci_upper=structured_inputs.get("ci_upper", "N/A"),
+            recent_data=structured_inputs.get("recent_data", ""),
+            metrics=structured_inputs.get("metrics", ""),
+            indicators=structured_inputs.get("indicators", ""),
             briefing=briefing,
         )
 
