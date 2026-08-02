@@ -329,6 +329,25 @@ def _format_prediction_note(note: str) -> str:
     return _NOTE_TRANSLATIONS.get(note, note)
 
 
+def _step_brief(step: dict) -> str:
+    """Agent 步骤的一行摘要，用于折叠区表格。"""
+    name = step.get("name", "?")
+    meta = step.get("result") or step.get("review") or {}
+    if "data" in name:
+        return f"模式={meta.get('latest_quarter','?')}，{meta.get('usable_indicators',0)}指标，{'OK' if meta.get('data_ok') else '阻断'}"
+    if "model" in name:
+        return f"{meta.get('model_name','?')}，RMSE={meta.get('backtest_rmse','?')}，预测={meta.get('prediction_value','?'):.1f}"
+    if "analyst" in name:
+        return f"生成简报（含 metrics + indicators 上下文）"
+    if "critic" in name:
+        if meta.get("critic_error"):
+            return "解析失败"
+        if meta.get("passed"):
+            return f"通过，{len(meta.get('issues',[]))} 个低优提示"
+        return f"不通过，{len(meta.get('issues',[]))} 个问题"
+    return "-"
+
+
 def safe_df(data: Any) -> pd.DataFrame:
     if isinstance(data, pd.DataFrame):
         return data.copy()
@@ -1324,11 +1343,10 @@ def render_agent(data: Dict[str, Any]) -> None:
 # ==================== v2.1 新页面 ====================
 
 def render_agent_v2(data: Dict[str, Any]) -> None:
-    """Agent 页：接入新 orchestrator 四角色流水线。"""
-    render_section("Agent Workflow", "AI Agent 协作流水线", "Data → Model → Analyst → Critic 四角色协作")
+    """Agent 过程页：四角色协作追踪。"""
+    render_section("Agent Workflow", "AI Agent 协作流水线", "Data → Model → Analyst → Critic 四角色协作过程追踪")
 
     if st.button("▶ 启动 Agent 流水线", use_container_width=True):
-        # load_engine 在 status 外调用，避免其 st.status 嵌套在"流水线运行中"内
         engine = load_engine()
         from sc_macro_agent.agents import AgentOrchestrator
         orch = AgentOrchestrator(config=engine.config)
@@ -1339,75 +1357,81 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
                 status_box.update(label="流水线执行失败", state="error")
                 st.error(f"流水线执行失败：{exc}")
                 return
-
-            for s in result.get("steps", []):
-                name = s.get("name", "?")
-                elapsed = s.get("elapsed_s", 0)
-                if "data_agent" in name:
-                    st.write(f"✅ 数据审计完成 ({elapsed:.1f}s)")
-                elif "model_agent" in name:
-                    mr = s.get("result", {})
-                    st.write(f"✅ 模型预测完成 ({elapsed:.1f}s) — {mr.get('prediction_quarter','?')}: {fmt_number(mr.get('prediction_value'), 2)}%")
-                elif "analyst_agent" in name:
-                    st.write(f"✅ 简报生成完成 ({elapsed:.1f}s)")
-                elif "critic" in name:
-                    rev = s.get("review", {})
-                    passed = rev.get("passed", False)
-                    icon = "✅" if passed else "⚠️"
-                    st.write(f"{icon} 审阅完成 ({elapsed:.1f}s) — {'通过' if passed else '存在 ' + str(len(rev.get('issues',[]))) + ' 个问题'}")
-                else:
-                    st.write(f"⏳ {name} ({elapsed:.1f}s)")
-
             status_box.update(label=f"流水线完成 — 状态: {result.get('status','?')}", state="complete")
 
         final_status = result.get("status", "?")
-        if final_status in ("passed_review", "failed_review", "unreviewed"):
-            _usage = result.get("token_usage", {})
-            if _usage.get("is_mock"):
-                st.warning("当前为降级模式输出，未调用真实模型（未配置 DEEPSEEK_API_KEY 或调用失败）。")
-            st.markdown("### 简报")
-            st.markdown(result.get("briefing", "无内容"))
+        if final_status == "review_failed":
+            st.error("审阅解析失败，简报未经有效审阅——最终文案仅供参考，请勿作为正式结论引用。")
 
-            review = result.get("review", {})
-            st.markdown("### 审阅结论")
-            summary = review.get("summary", "无")
-            if isinstance(summary, dict):
-                st.json(summary)
-            else:
-                st.write(summary)
-            if review.get("issues"):
-                issues_df = pd.DataFrame(review["issues"])
-                st.dataframe(issues_df, use_container_width=True, hide_index=True)
-
-            usage = result.get("token_usage", {})
-            st.caption(f"Token: {usage.get('total_tokens',0)} | 费用: ¥{usage.get('est_cost_cny',0):.4f} | 重写: {result.get('rewrite_rounds',0)}轮")
-
-            # Download button
-            st.download_button("⬇ 下载简报 (.md)", result.get("briefing", ""),
+        # ---- 简报摘要（前 200 字 + 展开按钮） ----
+        briefing = result.get("briefing", "")
+        with st.expander("📄 简报摘要（点击展开全文）", expanded=False):
+            st.markdown(briefing)
+            st.download_button("⬇ 下载简报 (.md)", briefing,
                                file_name=f"briefing_{pd.Timestamp.now().strftime('%Y%m%d')}.md")
-        else:
-            st.error(f"流水线状态异常: {final_status}")
+        st.caption(f"**简报预览**（{len(briefing)} 字）：{briefing[:200]}…")
 
-    # Show historical briefings
-    st.markdown("---")
-    st.markdown("### 历史简报")
-    briefings_dir = load_engine().config.data.resolve_artifact_dir(create=False) / "briefings"
-    if briefings_dir.exists():
-        files = sorted(briefings_dir.glob("briefing_*.md"), reverse=True)
-        if files:
-            selected = st.selectbox("选择历史简报", [f.name for f in files])
-            if selected:
-                content = (briefings_dir / selected).read_text(encoding="utf-8")
-                st.markdown(content)
-        else:
-            st.info("暂无历史简报")
-    else:
-        st.info("暂无历史简报")
+        st.markdown("---")
+
+        # ---- 协作时间线 ----
+        st.markdown("### 四角色协作时间线")
+        rewrite_rounds = result.get("rewrite_rounds", 0)
+        if rewrite_rounds > 0:
+            st.warning(f"共发生 {rewrite_rounds} 次审阅驳回后重写，详见下方 Critic 段。")
+
+        for step in result.get("steps", []):
+            name = step.get("name", "?")
+            elapsed = step.get("elapsed_s", 0)
+            meta = step.get("result") or step.get("review") or {}
+
+            if "data_agent" in name:
+                st.markdown(f"**🔍 DataAgent**  `{elapsed:.1f}s`")
+                st.caption(f"数据模式：{meta.get('latest_quarter','?')}，{meta.get('usable_indicators',0)} 个可用指标，{'无阻断' if meta.get('data_ok') else '存在阻断问题'}")
+
+            elif "model_agent" in name:
+                st.markdown(f"**📊 ModelAgent**  `{elapsed:.1f}s`")
+                parts = [f"模型：{meta.get('model_name','?')}"]
+                if meta.get("backtest_rmse") is not None:
+                    parts.append(f"回测 RMSE：{meta['backtest_rmse']:.2f}")
+                if meta.get("direction_accuracy") is not None:
+                    parts.append(f"方向准确率：{meta['direction_accuracy']:.1%}")
+                if meta.get("vs_baseline_ratio") is not None:
+                    parts.append(f"vs 基准比值：{meta['vs_baseline_ratio']:.2f}")
+                st.caption(" | ".join(parts))
+                st.caption(f"预测：{meta.get('prediction_quarter','?')} 增速 {meta.get('prediction_value','?'):.2f}% "
+                           f"（实际 {meta.get('actual_value','?')}，误差 {meta.get('nowcast_error','?'):.2f}）")
+
+            elif "analyst_agent" in name:
+                st.markdown(f"**✍️ AnalystAgent**  `{elapsed:.1f}s`")
+                st.caption(f"生成了 {len(briefing)} 字经济简报")
+
+            elif "critic" in name:
+                passed = meta.get("passed", False)
+                icon = "✅" if passed else "⚠️"
+                st.markdown(f"{icon} **CriticAgent**  `{elapsed:.1f}s`")
+                if meta.get("critic_error"):
+                    st.error(f"解析失败：{meta.get('summary','')}")
+                elif passed:
+                    st.success(f"审阅通过 —— {meta.get('summary','')}")
+                else:
+                    st.warning(f"审阅未通过 —— {meta.get('summary','')}")
+                issues = meta.get("issues", [])
+                if issues:
+                    issues_df = pd.DataFrame(issues)
+                    st.dataframe(issues_df, use_container_width=True, hide_index=True)
+
+            st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
+
+        # ---- 脚标 ----
+        u = result.get("token_usage", {})
+        if u.get("is_mock"):
+            st.warning("当前为降级模式输出，未调用真实模型（未配置 DEEPSEEK_API_KEY 或调用失败）。")
+        st.caption(f"Token: {u.get('total_tokens',0)} | 费用: ¥{u.get('est_cost_cny',0):.4f} | 重写: {rewrite_rounds}轮")
 
 
 def render_briefing_page(data: Dict[str, Any]) -> None:
-    """AI 简报页：简化版一键生成。"""
-    render_section("AI Briefing", "AI 经济简报生成", "基于最新数据自动生成四段式经济简报，经 AI 审阅后输出")
+    """AI 简报成果页：四角色协作的最终产出。"""
+    render_section("AI Briefing", "AI 经济简报", "四角色协作生成的经济简报成果")
 
     st.markdown(f'<div style="padding:0.5rem 1rem;background:{COLORS["bg_tertiary"]};border-radius:8px;font-size:0.85rem;color:{COLORS["text_secondary"]};">'
                 f'当前数据截至: {data.get("status",{}).get("dataset_mode","?")} 模式</div>',
@@ -1415,38 +1439,47 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
     st.markdown("")
 
     if st.button("🤖 生成简报", use_container_width=True, type="primary"):
-        # load_engine 在 status 外调用：若缓存冷启动，其自身 st.status 渲染为独立一条，不嵌套在"正在生成…"内
         engine = load_engine()
         from sc_macro_agent.agents import AgentOrchestrator
         orch = AgentOrchestrator(config=engine.config)
-        with st.status("正在生成...", expanded=True) as s:
+        with st.status("正在生成简报…", expanded=True) as s:
             try:
                 result = orch.run(engine, on_step=lambda msg: s.update(label=msg, state="running"))
             except Exception as exc:
                 s.update(label="流水线执行失败", state="error")
                 st.error(f"流水线执行失败：{exc}")
                 return
+            s.update(label=f"简报生成完成 — 状态: {result.get('status','?')}", state="complete")
 
-            for step in result.get("steps", []):
-                nm = step.get("name","?")
-                el = step.get("elapsed_s",0)
-                if "data" in nm: st.write(f"✅ 数据审计 ({el:.1f}s)")
-                elif "model" in nm: st.write(f"✅ 模型预测 ({el:.1f}s)")
-                elif "analyst" in nm: st.write(f"✅ 简报撰写 ({el:.1f}s)")
-                elif "critic" in nm:
-                    rv = step.get("review",{})
-                    st.write(f"{'✅' if rv.get('passed') else '⚠️'} 审阅 ({el:.1f}s)")
-            s.update(label=f"生成完成 — 状态: {result.get('status','?')}", state="complete")
+        final_status = result.get("status", "?")
+        if final_status == "review_failed":
+            st.error("审阅解析失败，简报未经有效审阅——最终文案仅供参考，请勿作为正式结论引用。")
 
         u = result.get("token_usage", {})
         if u.get("is_mock"):
             st.warning("当前为降级模式输出，未调用真实模型（未配置 DEEPSEEK_API_KEY 或调用失败）。")
         st.markdown(result.get("briefing", ""))
+
+        # 审阅结论 + issues（折叠 steps 明细到展开区）
         rev = result.get("review", {})
-        if rev.get("issues"):
-            with st.expander(f"审阅发现 {len(rev['issues'])} 个问题"):
+        with st.expander("查看审阅结论与流水线步骤"):
+            st.markdown("**审阅结论**")
+            st.write(rev.get("summary", "无"))
+            if rev.get("issues"):
                 st.dataframe(pd.DataFrame(rev["issues"]), use_container_width=True, hide_index=True)
-        st.caption(f"Token: {u.get('total_tokens',0)} | 费用: ¥{u.get('est_cost_cny',0):.4f}")
+            elif rev.get("passed"):
+                st.success("审阅通过，无问题。")
+            if rev.get("critic_error"):
+                st.error("审阅解析失败——模型未输出合法 JSON。")
+
+            steps_df = pd.DataFrame([
+                {"步骤": s.get("name", "?"), "耗时(s)": s.get("elapsed_s", 0),
+                 "备注": _step_brief(s)}
+                for s in result.get("steps", [])
+            ])
+            st.dataframe(steps_df, use_container_width=True, hide_index=True)
+
+        st.caption(f"Token: {u.get('total_tokens',0)} | 费用: ¥{u.get('est_cost_cny',0):.4f} | 重写: {result.get('rewrite_rounds',0)}轮")
 
 
 @st.cache_resource(show_spinner="正在构建检索索引…")

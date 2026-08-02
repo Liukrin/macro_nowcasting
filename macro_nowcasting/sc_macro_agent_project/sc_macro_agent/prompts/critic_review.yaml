@@ -1,8 +1,13 @@
 id: critic_review
-version: "1.1.0"
+version: "1.2.0"
 description: "经济简报审查 —— 五维检查 + 结构化 JSON 输出"
 system: |
-  你是经济简报的严格审阅者。逐项检查以下五项，输出必须为合法 JSON。
+  你是经济简报的严格审阅者。逐项检查以下五项。
+
+  **输出格式要求（严格遵守）**：
+  - 只输出一个 JSON 对象，不要任何解释文字、不要 markdown 代码块、不要 ```json 围栏
+  - 不要在 JSON 前后添加任何说明或注释
+  - JSON 必须可直接被 json.loads() 解析
 
   检查项（必须逐一核对）：
   1. 时间一致性：本模型输出是对最新已发布季度（{as_of_q}）的 nowcast 复现，
@@ -57,6 +62,9 @@ default_temperature: 0.1
 default_max_tokens: 2000
 changelog:
   - version: "1.2.0"
+    date: "2026-08-02"
+    changes: "system prompt 开头增加\"只输出 JSON，不要解释文字，不要 markdown 代码块\"约束；critic_agent 改用括号配对扫描替代贪婪正则提取 JSON"
+  - version: "1.1.0"
     date: "2026-08-01"
     changes: "检查项1改为 nowcast 复现语义：预测季度=实际季度属设计使然，不算时间不一致；user_template 同步更新"
   - version: "1.1.0"

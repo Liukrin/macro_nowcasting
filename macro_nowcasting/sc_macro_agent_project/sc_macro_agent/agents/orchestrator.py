@@ -114,7 +114,7 @@ class AgentOrchestrator:
         passed = review.get("passed", False) if review else False
         has_error = review.get("critic_error", False) if review else False
         if has_error:
-            status = "unreviewed"
+            status = "review_failed"
         elif passed:
             status = "passed_review"
         else:
