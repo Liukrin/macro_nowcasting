@@ -20,6 +20,9 @@ from ..logging_utils import get_logger
 _PRICE_PROMPT_PER_1K = 0.001       # CNY / 1K input tokens
 _PRICE_COMPLETION_PER_1K = 0.002   # CNY / 1K output tokens
 
+# 单次 chat 总耗时上限（含重试）：超过则直接降级 mock，避免云端长时间挂起
+_MAX_CHAT_TOTAL_SECONDS = 60.0
+
 
 class LLMClient:
     """DeepSeek Chat 客户端（单例）。"""
@@ -82,14 +85,19 @@ class LLMClient:
         return self._traces_dir
 
     # ------------------------------------------------------------------
-    # 内部：单次请求，含 3 次重试 + 指数退避，返回结构化 dict
+    # 内部：单次请求，重试 2 次 + 固定 1s 退避 + 60s 总耗时上限，返回结构化 dict
     # ------------------------------------------------------------------
     def _do_chat(self, system: str, user: str, temperature: float, max_tokens: int) -> dict:
-        """发送请求，内部重试 3 次（指数退避）。
+        """发送请求，内部重试 2 次（固定 1s 退避），单次调用总耗时上限 60s。
         返回 {"content": str, "prompt_tokens": int, "completion_tokens": int,
                "cache_hit_tokens": int, "latency_ms": float, "finish_reason": str}
         """
-        for attempt in range(3):
+        deadline = time.perf_counter() + _MAX_CHAT_TOTAL_SECONDS
+        for attempt in range(2):
+            if time.perf_counter() >= deadline:
+                self.logger.error("LLM total time exceeded %.0fs budget; degrading to mock",
+                                  _MAX_CHAT_TOTAL_SECONDS)
+                raise RuntimeError(f"LLM call exceeded {_MAX_CHAT_TOTAL_SECONDS:.0f}s total budget")
             try:
                 t0 = time.perf_counter()
                 resp = self._client.chat.completions.create(
@@ -133,11 +141,11 @@ class LLMClient:
                 }
 
             except Exception as exc:
-                self.logger.warning("LLM attempt %d/3 failed: %s", attempt + 1, exc)
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
+                self.logger.warning("LLM attempt %d/2 failed: %s", attempt + 1, exc)
+                if attempt < 1:
+                    time.sleep(1.0)  # 固定退避：云端场景快速失败优于长时间等待
 
-        raise RuntimeError("LLM call failed after 3 attempts")
+        raise RuntimeError("LLM call failed after 2 attempts")
 
     # ------------------------------------------------------------------
     # trace 写入（不影响主流程）

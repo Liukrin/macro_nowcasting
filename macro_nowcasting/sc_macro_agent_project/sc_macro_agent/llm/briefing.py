@@ -68,12 +68,9 @@ class BriefingGenerator:
             self.logger.error("predict_next failed: %s", exc)
             raise RuntimeError(f"无法生成预测，简报中止: {exc}") from exc
 
-        # --- 回测指标（从 engine.backtest_result 实时取，无则不填充 0） ---
+        # --- 回测指标（从 engine.backtest_result 实时取；无则不补跑，用占位文案说明） ---
         if engine.backtest_result is None:
-            try:
-                engine.backtest()
-            except Exception as exc:
-                self.logger.warning("backtest failed: %s", exc)
+            self.logger.warning("No backtest_result available; briefing will note backtest not run")
         metrics_text = ""
         bt = engine.backtest_result or {}
         m = bt.get("metrics")

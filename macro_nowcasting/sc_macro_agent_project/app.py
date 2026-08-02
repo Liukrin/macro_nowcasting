@@ -1336,11 +1336,17 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
     render_section("Agent Workflow", "AI Agent 协作流水线", "Data → Model → Analyst → Critic 四角色协作")
 
     if st.button("▶ 启动 Agent 流水线", use_container_width=True):
+        # load_engine 在 status 外调用，避免其 st.status 嵌套在"流水线运行中"内
+        engine = load_engine()
+        from sc_macro_agent.agents import AgentOrchestrator
+        orch = AgentOrchestrator(config=engine.config)
         with st.status("Agent 流水线运行中...", expanded=True) as status_box:
-            engine = load_engine()
-            from sc_macro_agent.agents import AgentOrchestrator
-            orch = AgentOrchestrator(config=engine.config)
-            result = orch.run(engine)
+            try:
+                result = orch.run(engine, on_step=lambda msg: status_box.update(label=msg, state="running"))
+            except Exception as exc:
+                status_box.update(label="流水线执行失败", state="error")
+                st.error(f"流水线执行失败：{exc}")
+                return
 
             for s in result.get("steps", []):
                 name = s.get("name", "?")
@@ -1364,6 +1370,9 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
 
         final_status = result.get("status", "?")
         if final_status in ("passed_review", "failed_review", "unreviewed"):
+            _usage = result.get("token_usage", {})
+            if _usage.get("is_mock"):
+                st.warning("当前为降级模式输出，未调用真实模型（未配置 DEEPSEEK_API_KEY 或调用失败）。")
             st.markdown("### 简报")
             st.markdown(result.get("briefing", "无内容"))
 
@@ -1414,11 +1423,17 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
     st.markdown("")
 
     if st.button("🤖 生成简报", use_container_width=True, type="primary"):
+        # load_engine 在 status 外调用：若缓存冷启动，其自身 st.status 渲染为独立一条，不嵌套在"正在生成…"内
+        engine = load_engine()
+        from sc_macro_agent.agents import AgentOrchestrator
+        orch = AgentOrchestrator(config=engine.config)
         with st.status("正在生成...", expanded=True) as s:
-            engine = load_engine()
-            from sc_macro_agent.agents import AgentOrchestrator
-            orch = AgentOrchestrator(config=engine.config)
-            result = orch.run(engine)
+            try:
+                result = orch.run(engine, on_step=lambda msg: s.update(label=msg, state="running"))
+            except Exception as exc:
+                s.update(label="流水线执行失败", state="error")
+                st.error(f"流水线执行失败：{exc}")
+                return
 
             for step in result.get("steps", []):
                 nm = step.get("name","?")
@@ -1429,14 +1444,16 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
                 elif "critic" in nm:
                     rv = step.get("review",{})
                     st.write(f"{'✅' if rv.get('passed') else '⚠️'} 审阅 ({el:.1f}s)")
-            s.update(label="生成完成", state="complete")
+            s.update(label=f"生成完成 — 状态: {result.get('status','?')}", state="complete")
 
+        u = result.get("token_usage", {})
+        if u.get("is_mock"):
+            st.warning("当前为降级模式输出，未调用真实模型（未配置 DEEPSEEK_API_KEY 或调用失败）。")
         st.markdown(result.get("briefing", ""))
         rev = result.get("review", {})
         if rev.get("issues"):
             with st.expander(f"审阅发现 {len(rev['issues'])} 个问题"):
                 st.dataframe(pd.DataFrame(rev["issues"]), use_container_width=True, hide_index=True)
-        u = result.get("token_usage", {})
         st.caption(f"Token: {u.get('total_tokens',0)} | 费用: ¥{u.get('est_cost_cny',0):.4f}")
 
 

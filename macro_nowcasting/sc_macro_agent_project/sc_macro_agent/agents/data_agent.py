@@ -9,7 +9,10 @@ from ..prediction_engine import PredictionEngine
 
 class DataAgent:
     def run(self, engine: PredictionEngine) -> Dict[str, Any]:
-        result = engine.audit_data(save_artifacts=False)
+        # 幂等：engine 已审计过则直接复用结果，避免每次 Agent 运行都重跑审计
+        if getattr(engine, "audit_result", None) is None:
+            engine.audit_data(save_artifacts=False)
+        result = engine.audit_result or {}
         blocking = [
             c["details"] for c in result.get("checks", [])
             if not c["passed"] and c.get("severity") == "error"

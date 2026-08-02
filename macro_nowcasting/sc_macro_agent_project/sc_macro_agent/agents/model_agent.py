@@ -16,18 +16,19 @@ class ModelAgent:
         self.logger = get_logger("sc_macro_agent.model_agent")
 
     def run(self, engine: PredictionEngine) -> Dict[str, Any]:
-        # Train
-        engine.run_agent(goal="audit_build_train", save_artifacts=False)
+        # 幂等：engine 已完成训练且已回测则直接跳过，避免每次点击都重跑完整流水线
+        # （load_engine 全流水线已跑过 audit+build+train+backtest+predict）
+        already_ready = (engine.selected_model is not None) and (engine.backtest_result is not None)
+        if not already_ready:
+            engine.run_agent(goal="audit_build_train", save_artifacts=False)
 
         # Predict next quarter
         pred = engine.predict_next()
 
         # Backtest metrics from engine.backtest_result（不依赖 artifacts/final，无则不填充 0）
+        # 无回测结果时不补跑（由 load_engine 全流水线或 predict 路径负责），metrics 为 None
         if engine.backtest_result is None:
-            try:
-                engine.backtest()
-            except Exception as exc:
-                self.logger.warning("backtest failed: %s", exc)
+            self.logger.warning("No backtest_result available; backtest metrics will be None")
 
         backtest_rmse = None
         vs_baseline = None

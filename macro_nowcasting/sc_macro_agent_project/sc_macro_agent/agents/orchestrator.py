@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..agent import ForecastAgent
 from ..config import AppConfig
@@ -23,7 +23,7 @@ class AgentOrchestrator:
       → 最终输出含 briefing + review + steps
     """
 
-    MAX_REWRITES = 2
+    MAX_REWRITES = 1
 
     def __init__(self, config: Optional[AppConfig] = None) -> None:
         cfg = config or AppConfig()
@@ -35,12 +35,20 @@ class AgentOrchestrator:
         self.analyst_agent = AnalystAgent(cfg)
         self.critic_agent = CriticAgent()
 
-    def run(self, engine: PredictionEngine) -> Dict[str, Any]:
+    def run(self, engine: PredictionEngine, on_step: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         steps: List[Dict[str, Any]] = []
         rewrite_rounds = 0
         tokens_before = self.llm.get_usage_stats().get("total_tokens", 0)
 
+        def _notify(msg: str) -> None:
+            if on_step is not None:
+                try:
+                    on_step(msg)
+                except Exception as exc:  # 回调失败不影响主流程
+                    self.logger.debug("on_step callback failed: %s", exc)
+
         # --- Step 1: DataAgent ---
+        _notify("正在执行 DataAgent（数据审计）…")
         t0 = time.perf_counter()
         data_step = self.agent.start_step("data_agent")
         data_result = self.data_agent.run(engine)
@@ -53,6 +61,7 @@ class AgentOrchestrator:
                     "blocking_issues": data_result["blocking_issues"]}
 
         # --- Step 2: ModelAgent ---
+        _notify("正在执行 ModelAgent（训练/预测）…")
         t0 = time.perf_counter()
         model_step = self.agent.start_step("model_agent")
         model_result = self.model_agent.run(engine)
@@ -61,6 +70,7 @@ class AgentOrchestrator:
         model_step.close("completed", model_result)
 
         # --- Step 3: AnalystAgent ---
+        _notify("正在执行 AnalystAgent（简报撰写）…")
         t0 = time.perf_counter()
         analyst_step = self.agent.start_step("analyst_agent")
         analyst_result = self.analyst_agent.run(engine)
@@ -73,6 +83,7 @@ class AgentOrchestrator:
         # --- Step 4: CriticAgent ---
         review = None
         for rnd in range(1 + self.MAX_REWRITES):
+            _notify(f"正在执行 CriticAgent（审阅第 {rnd + 1} 轮）…")
             t0 = time.perf_counter()
             critic_step = self.agent.start_step(f"critic_agent_r{rnd}")
             review = self.critic_agent.review(briefing, inputs)
@@ -95,6 +106,7 @@ class AgentOrchestrator:
             if rnd < self.MAX_REWRITES:
                 self.logger.info("Critic found %d high issues, rewriting (round %d)",
                                  len(high_issues), rewrite_rounds)
+                _notify(f"审阅未通过（{len(high_issues)} 个高优问题），AnalystAgent 重写…")
                 analyst_result = self.analyst_agent.run(engine, critic_feedback=high_issues)
                 briefing = analyst_result["briefing"]
 
