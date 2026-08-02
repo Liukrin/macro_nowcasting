@@ -24,18 +24,108 @@ from .logging_utils import get_logger
 _CN_DIGITS = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
 _CN_TEN = '十'
 
-# 内置"已知局限"占位文本：artifacts/final/known_limitations.md 缺失时使用
+# ================================================================
+# 版本标识（每次修改 ask() 签名必须升级）
+# ================================================================
+RAG_SERVICE_VERSION = "2.0.0"
+
+# ================================================================
+# 内置占位文本：云端部署无 artifacts/final/ 目录时的兜底
+# ================================================================
+# ⚠ 修改 artifacts/final/known_limitations.md 时必须同步更新此常量
+# ⚠ 修改 artifacts/final/data_lineage.md      时必须同步更新此常量
+
 _BUILTIN_LIMITATIONS_TEXT = (
     "# 已知局限\n"
+    "\n"
     "以下为项目数据与模型的已知局限。\n"
-    "## 1. 单季同比口径不可用\n四川GDP累计值序列存在vintage断点，单季同比(qoq_yoy)口径已弃用。\n"
-    "## 2. feature_vintage未实现\n当前使用季度完整数据，严格来说为同期回归(contemporaneous)而非严格nowcasting。\n"
-    "## 3. target_lag_1未进入特征集\n16特征cap下target_lag_1被挤掉，模型缺少y_{t-1}锚点。\n"
-    "## 4. chronos可选依赖\n云端不安装torch时Chronos残差修正自动跳过，不影响主预测。\n"
-    "## 5. 样本量限制\n回测窗口数有限，统计检验功效有限。\n"
-    "## 6. 数据覆盖\n国家月度数据截至2025-09，四川月度数据截至2025-12，2025Q4 GDP为估算值。\n"
-    "## 7. 共享可变状态\nst.cache_resource跨会话共享engine，单人演示可接受，生产需每会话独立实例或加锁。\n"
-    "## 8. 词汇匹配局限\nTF-IDF为纯词汇匹配，无法理解语义等价（如\"生产情况\"无法关联到\"规模以上工业增加值\"）。\n语义检索（BGE等嵌入模型）可解，但本地嵌入权重不完整，暂未部署。\n"
+    "\n"
+    "## 1. 单季同比口径不可用\n"
+    "四川GDP累计值序列在2017/2018间存在第四次全国经济普查造成的vintage断点。\n"
+    "累计值差分得到的单季名义值跨断点后出现严重口径跳变(2017=13.16%, 2018=16.01%,\n"
+    "而官方实际增速8.1%/8.0%)。因此单季同比(qoq_yoy)口径已弃用。\n"
+    "\n"
+    "## 2. feature_vintage未实现\n"
+    "当前所有特征使用季度完整数据(第t季度3个月全部可得)。\n"
+    "two_month/one_month的发布时滞模拟尚未实现。严格来说当前管道为同期回归(contemporaneous),\n"
+    "而非现时预测(nowcasting)。\n"
+    "\n"
+    "## 3. target_lag_1未进入特征集\n"
+    "16特征cap下target_lag_1被四川/全国/PMI特征挤掉。\n"
+    "模型无法显式使用y_{t-1},缺少锚点。\n"
+    "\n"
+    "## 4. chronos-2-small API不兼容\n"
+    "Chronos2Pipeline要求3D输入(n_series, n_variates, history_length),\n"
+    "而bolt系列接受2D(batch, length)。未适配。\n"
+    "\n"
+    "## 5. 样本量限制\n"
+    "回测窗口数24-32,统计检验(DM)功效有限。小样本下即使真实预测能力存在,\n"
+    "也可能无法通过显著性检验。\n"
+    "\n"
+    "## 6. 数据覆盖\n"
+    "- 国家月度数据截止2025-09(固定资产投资/工业增加值等)\n"
+    "- PMI截止2025-12\n"
+    "- 四川月度数据截止2025-12\n"
+    "- 2025Q4 GDP为估算值\n"
+    "\n"
+    "## 7. 指标口径混杂\n"
+    "四川月度指标均为累计同比(ytd_yoy),国家月度含累计同比和当月同比(mom_yoy)两种。\n"
+    "混频建模中将两者纳入同一特征矩阵,口径差异可能引入噪声。\n"
+    "\n"
+    "## 8. 方向准确率口径\n"
+    "last_value 预测的变化量恒为 0（所有窗口使用同一个 y_{t-1}），\n"
+    "其方向准确率等于\"实际同比下降的窗口占比\"，不作预测能力解读。\n"
+    "所有模型的方向准确率已改为与 0.5（随机猜测）比较并做二项检验。\n"
+    "小样本下（23 对方向比较）无一模型显著优于随机。\n"
+    "\n"
+    "## 9. 常数偏差修正对 delta 残差无效的更正\n"
+    "原报告称\"delta 残差均值为 0 是差分序列的自然性质\"——此表述有误。\n"
+    "正确原因：带截距项的线性模型（ElasticNet 含截距），\n"
+    "其样本内拟合残差均值必然约等于 0。截距吸收了系统性偏差，\n"
+    "因此用样本内残差均值做常数修正等同于加 0，不起作用。\n"
+    "\n"
+    "## 10. 共享可变状态（st.cache_resource）\n"
+    "load_view_data 与 load_engine 使用 @st.cache_resource，\n"
+    "返回的是跨会话共享的同一个对象引用，其 dict 与其中的 engine 会被所有会话共用。\n"
+    "- 本项目为单人演示场景，共享引擎可接受；\n"
+    "- 生产环境需改为每会话独立实例或加锁。\n"
+    "\n"
+    "## 11. TF-IDF 词汇匹配局限\n"
+    "采用 char_wb n-gram (2,4) 的 TF-IDF 为纯词汇匹配，无法理解语义等价。\n"
+    "典型例子：\"四川的生产情况\"无法关联到\"规模以上工业增加值_累计同比\"，\n"
+    "因为语料卡片文本不含\"生产\"一词。\n"
+    "语义检索（BGE等嵌入模型）可解此类语义鸿沟，\n"
+    "但本地嵌入权重不完整且会增加部署复杂度，暂未部署。\n"
+    "\n"
+    "## 12. 跨区域 diversity re-ranking 缺失\n"
+    "search() 的合并排序仅按归一化 TF-IDF 分降序，不做跨区域多样性重排。\n"
+    "当查询同时提到四川和全国时（如\"四川和全国比工业增速差多少\"），\n"
+    "top-5 结果可能全部偏向一个区域，无法保证两个区域的结果都出现。\n"
+    "引入 MMR（Maximal Marginal Relevance）或按区域分层抽样可解。但当前检索\n"
+    "量级较小（top_k=5），实际影响有限，暂未实现。\n"
+)
+
+_BUILTIN_LINEAGE_TEXT = (
+    "# 数据溯源台账\n"
+    "\n"
+    "## 数据源\n"
+    "- 四川省数据202512.xlsx: 季度GDP (col 0-8) + 月度经济指标 (col 12-17)\n"
+    "- 国家数据202512.xlsx: 月度经济指标 (Sheet '月度', col 0-4)\n"
+    "- pmi_data.csv: PMI 14个分项 (2015-01 ~ 2025-12)\n"
+    "\n"
+    "## 日期解析修复\n"
+    "- Excel序列号 (45566/45839/45901等) 被正确解析为2024-10~2025-09\n"
+    "- YYYYMM格式整数 (201002等) 优先于Excel序列号检查\n"
+    "- 15行全NaN空行已清除\n"
+    "\n"
+    "## 口径区分\n"
+    "- 固定资产投资额累计增长(%) → 累计同比 (ytd_yoy)\n"
+    "- 工业增加值同比增长(%) → 当月同比 (mom_yoy)\n"
+    "- 房地产投资/社消零售累计值 → 水平序列 (cum_level, 排除特征池)\n"
+    "- GDP_累计同比 → 指数转增速 (117.7→17.7%)\n"
+    "\n"
+    "## ETL脚本\n"
+    "- rebuild_etl.py: 完整重建流程\n"
 )
 
 
@@ -386,7 +476,9 @@ class RAGService:
             from datetime import datetime as _dt
             mtime = _dt.fromtimestamp(dl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             dl_text = f"（本文档最后修改时间：{mtime}）\n\n{dl_path.read_text(encoding='utf-8')}"
-            docs.extend(self._split_markdown_sections(dl_text, "data_lineage.md"))
+        else:
+            dl_text = _BUILTIN_LINEAGE_TEXT
+        docs.extend(self._split_markdown_sections(dl_text, "data_lineage.md"))
 
         if self.engine is not None:
             docs.extend(self._build_model_metric_docs())

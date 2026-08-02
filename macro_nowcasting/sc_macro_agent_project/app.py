@@ -60,16 +60,37 @@ except Exception as _import_err:
 
 _tick("imports_done")
 
+# ---- 版本标识（cloud 环境下 mtime 不可靠，用版本号）----
+APP_VERSION = "chat-2.0.0"
+
 
 def _build_stamp() -> str:
-    """返回 app.py 与 rag_service.py 的最后修改时间，用于确认运行的是哪份代码。"""
-    import pathlib
+    """返回应用与 RAG 服务的版本标识。
+
+    云端部署时 git checkout 会把所有文件 mtime 设成同一值，
+    因此改用版本号 + git SHA（若可得）。
+    """
     from sc_macro_agent import rag_service as _rs
 
-    def _mt(p):
-        return _time.strftime("%m-%d %H:%M", _time.localtime(pathlib.Path(p).stat().st_mtime))
+    rag_ver = getattr(_rs, "RAG_SERVICE_VERSION", "?")
+    stamp = f"app {APP_VERSION} · rag {rag_ver}"
 
-    return f"app {_mt(__file__)} · rag {_mt(_rs.__file__)}"
+    # git commit 短 hash（本地或 STREAMLIT_GIT_SHA 环境变量）
+    try:
+        sha = os.environ.get("STREAMLIT_GIT_SHA")
+        if not sha:
+            import subprocess
+            r = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if r.returncode == 0:
+                sha = r.stdout.strip()
+        if sha:
+            stamp += f" · {sha[:8]}"
+    except Exception:
+        pass
+    return stamp
 
 
 # ==================== 设计系统 ====================
@@ -1637,12 +1658,36 @@ def render_rag_page(data: Dict[str, Any]) -> None:
     # ---- 运行时自检：确认 RAGService 是新版（ask() 接受 history 参数）----
     _sig = inspect.signature(rag.ask)
     if "history" not in _sig.parameters:
+        from sc_macro_agent import rag_service as _rs_mod
+        params_list = ", ".join(str(p) for p in _sig.parameters.values())
+        rag_ver = getattr(_rs_mod, "RAG_SERVICE_VERSION", "未定义")
+        rag_path = getattr(_rs_mod, "__file__", "未知")
         st.error(
-            "⚠ 检测到旧版 RAGService 实例（ask() 不接受 history 参数）。"
-            "这通常是 Streamlit 进程未重启或 cache_resource 未清理导致的。"
-            "请终止进程后执行：streamlit cache clear && streamlit run app.py"
+            f"⚠ 检测到旧版 RAGService 实例（ask() 不接受 history 参数）。\n\n"
+            f"诊断信息：\n"
+            f"- 当前签名参数：({params_list})\n"
+            f"- RAG_SERVICE_VERSION：{rag_ver}\n"
+            f"- 模块路径：{rag_path}\n\n"
+            f"这通常是 Streamlit 进程未重启或 cache_resource 未清理导致的。\n"
+            f"请终止进程后执行：streamlit cache clear && streamlit run app.py"
         )
         st.stop()
+
+    # ---- 部署环境自检 ----
+    with st.expander("部署环境", expanded=False):
+        from sc_macro_agent import rag_service as _rs_mod
+        st.caption(f"APP_VERSION: {APP_VERSION}")
+        st.caption(f"RAG_SERVICE_VERSION: {getattr(_rs_mod, 'RAG_SERVICE_VERSION', '?')}")
+        st.caption(f"DEEPSEEK_API_KEY: {'已设置' if os.environ.get('DEEPSEEK_API_KEY') else '未设置'}")
+        st.caption(f"语料文档: {len(rag.documents)} 篇 (card={len(rag.idx_card)}, doc={len(rag.idx_doc)})")
+
+        art_dir = rag.artifacts_dir
+        st.caption(f"artifacts/final 目录: {'存在' if art_dir.exists() else '不存在'} ({art_dir})")
+        if art_dir.exists():
+            kl_exists = (art_dir / "known_limitations.md").exists()
+            dl_exists = (art_dir / "data_lineage.md").exists()
+            st.caption(f"known_limitations.md: {'文件' if kl_exists else '内置占位'}")
+            st.caption(f"data_lineage.md: {'文件' if dl_exists else '内置占位'}")
 
     # ---- 会话状态 ----
     if "rag_messages" not in st.session_state:
