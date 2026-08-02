@@ -883,6 +883,11 @@ def create_registry_pie(df: pd.DataFrame, name_col: str) -> go.Figure | None:
 
 
 # ==================== 侧边栏控制 ====================
+PAGE_NAMES = [
+    "🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析",
+    "🧪 数据质量", "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答", "📊 LLM 追踪",
+]
+
 def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
     st.sidebar.markdown(
         f"""
@@ -899,10 +904,13 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
         unsafe_allow_html=True,
     )
 
+    # 与 main() 中顶部导航共用 session_state.current_page
+    st.session_state.setdefault("current_page", PAGE_NAMES[0])
     page = st.sidebar.radio(
         "导航",
-        ["🏠 概览驾驶舱", "🔮 现时预测", "📈 历史回测", "🔍 因子分析", "🧪 数据质量",
-         "⚙️ Agent 工作流", "🤖 AI 简报", "💬 数据问答", "📊 LLM 追踪"],
+        PAGE_NAMES,
+        index=PAGE_NAMES.index(st.session_state.current_page),
+        key="current_page",
         label_visibility="collapsed",
     )
 
@@ -1867,8 +1875,17 @@ def main() -> None:
     # 引擎初始化失败时在页面顶部显式提示（不要只 print 到 stderr）
     if _init_err:
         st.warning(f"流水线初始化失败，部分功能不可用：{_init_err}")
-    # 移动端导航引导：窄屏下侧边栏默认折叠，提示用户展开
-    st.caption("◀ 点击左上角图标展开导航菜单")
+    # 顶部导航兜底（移动端侧边栏图标可能被遮挡）
+    st.session_state.setdefault("current_page", PAGE_NAMES[0])
+    with st.expander("📑 页面导航", expanded=False):
+        chosen = st.selectbox(
+            "跳转到", PAGE_NAMES,
+            index=PAGE_NAMES.index(st.session_state.current_page),
+            key="_page_nav",
+            label_visibility="collapsed",
+        )
+        st.session_state.current_page = chosen
+    st.caption("📑 使用上方导航切换页面，或点击左上角图标展开侧边栏")
     page, refresh = sidebar_controls(data)
 
     if refresh:
@@ -1881,6 +1898,8 @@ def main() -> None:
     render_hero(data)
     _tick("main:after_render_hero")
 
+    # 路由：优先从 session_state 读取（覆盖 sidebar_controls 的返回值以保持同步）
+    page = st.session_state.current_page
     if "概览驾驶舱" in page:
         render_overview(data)
     elif "现时预测" in page:
