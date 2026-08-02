@@ -33,6 +33,8 @@ try:
     from pathlib import Path
     from typing import Any, Dict, Iterable, Tuple
 
+    import inspect
+
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -57,6 +59,18 @@ except Exception as _import_err:
     st.stop()
 
 _tick("imports_done")
+
+
+def _build_stamp() -> str:
+    """返回 app.py 与 rag_service.py 的最后修改时间，用于确认运行的是哪份代码。"""
+    import pathlib
+    from sc_macro_agent import rag_service as _rs
+
+    def _mt(p):
+        return _time.strftime("%m-%d %H:%M", _time.localtime(pathlib.Path(p).stat().st_mtime))
+
+    return f"app {_mt(__file__)} · rag {_mt(_rs.__file__)}"
+
 
 # ==================== 设计系统 ====================
 COLORS = {
@@ -1612,12 +1626,23 @@ def _fmt_tool_badge(tool_calls: list[dict]) -> str:
 def render_rag_page(data: Dict[str, Any]) -> None:
     """RAG 数据问答页 —— 多轮聊天界面。"""
     render_section("Data Q&A", "AI 数据问答", "基于项目数据和模型产出的智能问答")
+    st.caption(f"⚙ build {_build_stamp()} · chat v2")
 
     # Warning if no API key
     if not os.environ.get("DEEPSEEK_API_KEY"):
         st.warning("⚠️ 未设置 DEEPSEEK_API_KEY，回答为 mock 降级模式。设置环境变量后重启以启用真实 AI 问答。")
 
     rag = get_rag_service()
+
+    # ---- 运行时自检：确认 RAGService 是新版（ask() 接受 history 参数）----
+    _sig = inspect.signature(rag.ask)
+    if "history" not in _sig.parameters:
+        st.error(
+            "⚠ 检测到旧版 RAGService 实例（ask() 不接受 history 参数）。"
+            "这通常是 Streamlit 进程未重启或 cache_resource 未清理导致的。"
+            "请终止进程后执行：streamlit cache clear && streamlit run app.py"
+        )
+        st.stop()
 
     # ---- 会话状态 ----
     if "rag_messages" not in st.session_state:
