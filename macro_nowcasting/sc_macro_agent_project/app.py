@@ -1525,8 +1525,16 @@ def render_rag_page(data: Dict[str, Any]) -> None:
             result = rag.ask(q)
         st.markdown(f"**问：** {q}")
         st.markdown(f"**答：** {result['answer']}")
+        # 检索词展示（调试信息 + 技术细节窗口）
+        rw_keywords = result.get("rewrite_keywords")
+        if rw_keywords:
+            if rw_keywords == "__CAPABILITY__":
+                st.caption("检索词：能力说明路径（系统能力询问）")
+            elif result.get("rewrite_applied"):
+                st.caption(f"检索词：{rw_keywords}")
+        elif not result.get("rewrite_applied"):
+            st.caption(f"检索词：{q}（未改写）")
         with st.expander("参考来源"):
-            for i, src in enumerate(result.get("sources", [])[:3]):
                 st.caption(f"[{i+1}] 相似度={src['score']:.3f} | {src['text'][:200]}")
 
 

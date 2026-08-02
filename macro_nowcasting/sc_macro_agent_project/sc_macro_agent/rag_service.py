@@ -238,54 +238,32 @@ class RAGService:
         """
         docs: List[Dict[str, Any]] = []
 
-        # --- 已知局限：文件存在读文件，否则用内置中文占位文本 ---
+        # --- 已知局限：文件存在读文件（文档为人工维护，无陈旧风险），否则用内置占位 ---
         kl_path = self.artifacts_dir / "known_limitations.md"
         if kl_path.exists():
-            kl_text = kl_path.read_text(encoding="utf-8")
+            from datetime import datetime as _dt
+            mtime = _dt.fromtimestamp(kl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            kl_text = f"（本文档最后修改时间：{mtime}）\n\n{kl_path.read_text(encoding='utf-8')}"
         else:
             kl_text = _BUILTIN_LIMITATIONS_TEXT
         docs.extend(self._split_markdown_sections(kl_text, "known_limitations.md"))
 
-        # --- data_lineage：仅文件（无则跳过） ---
+        # --- data_lineage：文件存在时加 mtime ---
         dl_path = self.artifacts_dir / "data_lineage.md"
         if dl_path.exists():
-            docs.extend(self._split_markdown_sections(dl_path.read_text(encoding="utf-8"), "data_lineage.md"))
+            from datetime import datetime as _dt
+            mtime = _dt.fromtimestamp(dl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            dl_text = f"（本文档最后修改时间：{mtime}）\n\n{dl_path.read_text(encoding='utf-8')}"
+            docs.extend(self._split_markdown_sections(dl_text, "data_lineage.md"))
 
-        # --- final_metrics / backtest_predictions：文件存在则读 ---
-        fp = self.artifacts_dir / "final_metrics.csv"
-        if fp.exists():
-            df = pd.read_csv(fp)
-            for _, row in df.iterrows():
-                text = (f"模型 {row['model']} 的评估指标：RMSE={row['rmse']:.4f}, "
-                        f"MAE={row['mae']:.4f}, R²={row['r2']:.4f}, 方向准确率={row['dir_acc']:.4f}。")
-                docs.append({
-                    "text": text,
-                    "metadata": {"type": "model_metric", "model": row["model"]},
-                })
-                self._entity_set.add(str(row["model"]))
-
-        fp = self.artifacts_dir / "backtest_predictions.csv"
-        if fp.exists():
-            df = pd.read_csv(fp)
-            for _, row in df.iterrows():
-                text = (f"{row['test_quarter']}季度，四川省GDP累计同比实际值为{row['actual']:.1f}%，"
-                        f"elastic_midas_chronos模型预测值为{row['elastic_midas_chronos']:.1f}%，"
-                        f"last_value基准预测值为{row['last_value']:.1f}%。")
-                y = None
-                qm = re.match(r'(\d{4})Q(\d)', str(row['test_quarter']))
-                if qm:
-                    y = int(qm.group(1))
-                docs.append({
-                    "text": text,
-                    "metadata": {"type": "backtest_prediction", "quarter": str(row["test_quarter"]),
-                                "year": y if y else None},
-                })
-
-        # --- 实时构建：回测指标 / 数据审计 ← engine ---
+        # --- 模型指标与回测数据：只从 engine 实时构建，不读 artifacts/final CSV ---
+        # 理由：CSV 是历史运行的陈旧产物，与当前界面显示可能不一致。
         if self.engine is not None:
-            docs.extend(self._build_realtime_engine_docs())
+            docs.extend(self._build_model_metric_docs())
+            docs.extend(self._build_backtest_window_docs())
+            docs.extend(self._build_audit_docs())
         else:
-            self.logger.warning("No engine provided to RAGService; realtime backtest/audit docs skipped")
+            self.logger.warning("No engine provided to RAGService; model metrics / backtest / audit docs skipped")
 
         # --- 前瞻预测：复用传入 engine，不自行触发流水线 ---
         if self.engine is not None:
@@ -317,21 +295,152 @@ class RAGService:
 
         return docs
 
-    def _build_realtime_engine_docs(self) -> List[Dict[str, Any]]:
-        """从 engine 实时状态构建回测指标与数据审计文档（不依赖 artifacts 文件）。"""
+    def _build_model_metric_docs(self) -> List[Dict[str, Any]]:
+        """从 engine.leaderboard 构建全部候选模型的评估指标文档。
+
+        每条文档含排名、是否系统选用、与最优 RMSE 差距、口径标注。
+        另额外构建 1 条 model_comparison 汇总排名文档。
+        只从 engine 实时取，不读 artifacts/final CSV（陈旧风险）。
+        """
+        docs: List[Dict[str, Any]] = []
+        leaderboard = getattr(self.engine, "leaderboard", None) or []
+        selected_name = getattr(self.engine, "selected_model_name", None)
+
+        if not leaderboard:
+            return docs
+
+        # 按 RMSE 升序排序
+        parsed: list[dict] = []
+        for entry in leaderboard:
+            if isinstance(entry, dict):
+                name = entry.get("model_name", "")
+                rmse = float(entry.get("rmse", 0.0))
+                mae = float(entry.get("mae", 0.0))
+                r2 = float(entry.get("r2", 0.0))
+                dir_acc = float(entry.get("direction_accuracy", 0.0))
+            elif hasattr(entry, "model_name"):
+                name = entry.model_name
+                rmse = float(getattr(entry, "rmse", 0.0))
+                mae = float(getattr(entry, "mae", 0.0))
+                r2 = float(getattr(entry, "r2", 0.0))
+                dir_acc = float(getattr(entry, "direction_accuracy", 0.0))
+            else:
+                continue
+            parsed.append({"name": name, "rmse": rmse, "mae": mae, "r2": r2, "dir_acc": dir_acc})
+        parsed.sort(key=lambda x: x["rmse"])
+
+        best_rmse = parsed[0]["rmse"] if parsed else 0.0
+        total = len(parsed)
+
+        # 校验 selected_model_name 与 leaderboard 第一名是否一致
+        if selected_name and parsed and selected_name != parsed[0]["name"]:
+            self.logger.warning(
+                "selected_model_name='%s' 与 leaderboard 第一名 '%s' 不一致",
+                selected_name, parsed[0]["name"],
+            )
+
+        # 单模型文档
+        for rank, entry in enumerate(parsed, 1):
+            name = entry["name"]
+            rmse = entry["rmse"]
+            mae = entry["mae"]
+            r2 = entry["r2"]
+            dir_acc = entry["dir_acc"]
+            is_selected = "是" if selected_name and name == selected_name else "否"
+            gap = f"本模型为最优" if rank == 1 else f"较最优模型 RMSE 高 {rmse - best_rmse:.4f}"
+
+            text = (
+                f"排名：第 {rank} 名（共 {total} 个候选）| 系统选用：{is_selected}\n"
+                f"模型 {name} 的评估指标（验证集差分口径）："
+                f"RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}, 方向准确率={dir_acc:.4f}。"
+                f"（{gap}）"
+            )
+            docs.append({
+                "text": text,
+                "metadata": {"type": "model_metric", "model": name, "rank": rank, "selected": is_selected == "是"},
+            })
+            self._entity_set.add(str(name))
+
+        # 汇总排名文档（model_comparison 类型，供"哪个模型最好""模型对比"类问题优先召回）
+        backtest_rmse = None
+        backtest_dir = None
+        bt = getattr(self.engine, "backtest_result", None) or {}
+        bt_metrics = bt.get("metrics")
+        if bt_metrics:
+            backtest_rmse = bt_metrics.get("rmse")
+            backtest_dir = bt_metrics.get("direction_accuracy")
+
+        lines = ["模型对比汇总（按验证集 RMSE 升序，验证集差分口径）", ""]
+        for rank, entry in enumerate(parsed, 1):
+            tag = " ← 系统选用" if (selected_name and entry["name"] == selected_name) else ""
+            base_tag = "（基线）" if entry["name"] in ("last_value", "mean_recent") else ""
+            lines.append(f"第{rank}名 {entry['name']:<18} RMSE {entry['rmse']:.4f}  MAE {entry['mae']:.4f}{tag}{base_tag}")
+        lines.append("")
+        lines.append("说明：此处 RMSE 为验证集差分口径。")
+        if backtest_rmse is not None:
+            dir_str = f"，方向准确率 {backtest_dir:.1%}" if backtest_dir is not None else ""
+            lines.append(
+                f"32 窗口 expanding-window 回测（level 口径、含 2020 年断点）的 RMSE 为 {backtest_rmse:.3f}{dir_str}，"
+                "两者口径不同，不可直接比较。"
+            )
+        comparison_text = "\n".join(lines)
+        docs.append({
+            "text": comparison_text,
+            "metadata": {"type": "model_comparison", "n_models": total, "best_model": parsed[0]["name"]},
+        })
+        # 额外：一条"当选模型"专用文档，语序与自然提问高度重叠，确保提问"系统最终用哪个模型"时必被召回
+        if selected_name:
+            best = parsed[0]
+            docs.append({
+                "text": (
+                    f"系统最终选用的模型是 {selected_name}。"
+                    f"该模型在验证集差分口径下 RMSE={best['rmse']:.4f}，MAE={best['mae']:.4f}，"
+                    f"排名第 1 名（共 {total} 个候选）。"
+                    f"系统选用该模型作为预测引擎，用户界面展示的预测值与回测指标均来自该模型。"
+                ),
+                "metadata": {"type": "model_metric", "model": selected_name, "selected": True, "rank": 1},
+            })
+
+        # 注册关键词以提升"系统选用""模型对比"类问题的 TF-IDF 召回
+        self._entity_set.add("系统选用")
+        self._entity_set.add("模型对比")
+        self._entity_set.add("selected_model")
+
+        return docs
+
+    def _build_backtest_window_docs(self) -> List[Dict[str, Any]]:
+        """从 engine.backtest_result.window_results 构建逐窗口回测预测文档（32窗口 expanding-window，level 口径）。"""
         docs: List[Dict[str, Any]] = []
         bt = getattr(self.engine, "backtest_result", None) or {}
-        metrics = bt.get("metrics")
-        if metrics:
-            model_name = getattr(self.engine, "selected_model_name", None) or "selected_model"
-            rmse = metrics.get("rmse", 0.0)
-            mae = metrics.get("mae", 0.0)
-            r2 = metrics.get("r2", 0.0)
-            dir_acc = metrics.get("direction_accuracy", 0.0)
-            text = (f"模型 {model_name} 的回测评估指标：RMSE={rmse:.4f}, MAE={mae:.4f}, "
-                    f"R²={r2:.4f}, 方向准确率={dir_acc:.4f}。")
-            docs.append({"text": text, "metadata": {"type": "model_metric", "model": model_name}})
-            self._entity_set.add(model_name)
+        windows = bt.get("window_results", [])
+        if not isinstance(windows, list):
+            return docs
+        for w in windows:
+            if not isinstance(w, dict):
+                continue
+            qtr = w.get("test_quarter", "")
+            actual = w.get("actual")
+            pred = w.get("prediction")
+            model_name = w.get("model_name", getattr(self.engine, "selected_model_name", "?"))
+            if actual is None or pred is None:
+                continue
+            text = (f"{qtr}季度，四川省GDP累计同比实际值为{float(actual):.1f}%，"
+                    f"{model_name}模型预测值为{float(pred):.1f}%。"
+                    f"（32窗口 expanding-window，level 口径）")
+            y = None
+            qm = re.match(r'(\d{4})Q(\d)', str(qtr))
+            if qm:
+                y = int(qm.group(1))
+            docs.append({
+                "text": text,
+                "metadata": {"type": "backtest_prediction", "quarter": str(qtr),
+                            "year": y if y else None},
+            })
+        return docs
+
+    def _build_audit_docs(self) -> List[Dict[str, Any]]:
+        """从 engine.audit_result 构建数据审计文档。"""
+        docs: List[Dict[str, Any]] = []
         audit = getattr(self.engine, "audit_result", None)
         if audit:
             summary_txt = audit.get("summary")
@@ -500,15 +609,80 @@ class RAGService:
         return results
 
     # ================================================================
-    # B.3: 问答链路
+    # B.3: 查询改写（LLM 翻译自然语言 → 语料术语）
+    # ================================================================
+    def _rewrite_query(self, question: str) -> str | None:
+        """调用 query_rewrite 提示词将自然语言问题翻译成语料术语关键词。
+
+        返回改写后的关键词串（空格分隔）；若 LLM 不可用/失败/超时/返回 mock 文本则返回 None。
+        """
+        if self.llm.is_mock:
+            return None
+        try:
+            from .prompts.registry import render
+            prompt = render("query_rewrite", question=question)
+            keywords = self.llm.chat(
+                prompt["system"], prompt["user"],
+                temperature=prompt["temperature"], max_tokens=prompt["max_tokens"],
+                prompt_id=prompt["id"], prompt_version=prompt["version"],
+                caller="rag",
+            )
+            keywords = keywords.strip()
+            # 降级 mock 文本不是有效关键词，当作改写失败处理
+            if not keywords or keywords.startswith("[MOCK LLM]"):
+                return None
+            return keywords
+        except Exception as exc:
+            self.logger.warning("Query rewrite failed: %s", exc)
+            return None
+
+    # ================================================================
+    # B.4: 问答链路（含查询改写）
     # ================================================================
     def ask(self, question: str, top_k: int = 5) -> Dict[str, Any]:
-        """RAG 问答：检索 + LLM 生成。"""
-        sources = self.search(question, top_k)
-        if not sources:
-            return {"answer": "资料中没有相关信息。", "sources": []}
+        """RAG 问答：查询改写 → TF-IDF 检索 → LLM 生成。
 
-        # 拼装 context
+        流程：
+          1. LLM 改写问题为语料术语关键词
+          2. 返回 __CAPABILITY__ → 能力说明路径
+          3. 改写后关键词检索 → 未命中则原问题兜底检索
+          4. 两次都未命中 → 能力说明路径
+        """
+        rewrite_keywords: str | None = None
+        rewrite_applied = False
+
+        # 1. 查询改写
+        kw = self._rewrite_query(question)
+        if kw and kw.strip() == "__CAPABILITY__":
+            return {
+                "answer": self._capability_answer(),
+                "sources": [],
+                "rewrite_keywords": "__CAPABILITY__",
+                "rewrite_applied": True,
+            }
+        if kw:
+            rewrite_keywords = kw
+            rewrite_applied = True
+
+        # 2. 用改写后关键词检索
+        search_query = rewrite_keywords if rewrite_applied else question
+        sources = self.search(search_query, top_k)
+
+        # 3. 改写后未命中 → 兜底：用原始问题检索
+        if not sources and rewrite_applied:
+            self.logger.debug("Rewrite keywords '%s' returned empty, falling back to raw query", search_query)
+            sources = self.search(question, top_k)
+
+        # 4. 两次都未命中 → 能力说明路径
+        if not sources:
+            return {
+                "answer": self._capability_answer(),
+                "sources": [],
+                "rewrite_keywords": rewrite_keywords if rewrite_applied else None,
+                "rewrite_applied": rewrite_applied,
+            }
+
+        # 5. 拼装 context + LLM 生成
         context_parts = []
         for i, (text, score, meta) in enumerate(sources):
             context_parts.append(f"[{i+1}] {text}")
@@ -526,7 +700,22 @@ class RAGService:
         return {
             "answer": answer,
             "sources": [{"text": t, "score": s, "metadata": m} for t, s, m in sources],
+            "rewrite_keywords": rewrite_keywords if rewrite_applied else None,
+            "rewrite_applied": rewrite_applied,
         }
+
+    @staticmethod
+    def _capability_answer() -> str:
+        return (
+            "我可以回答以下类型的问题：\n"
+            "1. 查询四川省/全国月度经济指标（GDP、工业增加值、社零、房地产投资、PMI 等）的具体数值；\n"
+            "2. 比较不同模型的回测性能（RMSE、方向准确率等）与 leaderboard 排名；\n"
+            "3. 了解模型的预测值与置信区间；\n"
+            "4. 查阅项目的已知局限、数据覆盖范围、方法论说明。\n"
+            "\n"
+            "请用具体指标名称和日期提问（如\"2025Q4 四川省 GDP 累计同比增速\"或\"哪个模型 RMSE 最低\"），"
+            "这样我可以给出最准确的回答。"
+        )
 
 
 # ================================================================
