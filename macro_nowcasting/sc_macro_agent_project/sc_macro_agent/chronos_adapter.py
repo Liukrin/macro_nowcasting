@@ -27,6 +27,7 @@ class ChronosResidualCorrector:
         self.model_name = model_name
         self.pipe = None
         self.failed = False
+        self.failure_reason: Optional[str] = None
         self._torch = None
         self._total_calls = 0
         self._total_time = 0.0
@@ -38,17 +39,35 @@ class ChronosResidualCorrector:
         try:
             import torch
             self._torch = torch
+        except ImportError as exc:
+            self.failed = True
+            self.failure_reason = "依赖未安装"
+            self.logger.warning("Chronos loading failed (依赖未安装): %s", exc)
+            return
+        try:
             from chronos import ChronosBoltPipeline
+        except ImportError as exc:
+            self.failed = True
+            self.failure_reason = "依赖未安装"
+            self.logger.warning("Chronos loading failed (依赖未安装): %s", exc)
+            return
+        try:
             self.pipe = ChronosBoltPipeline.from_pretrained(
                 self.model_name,
                 device_map="cpu",
                 dtype=torch.float32,
             )
             self.logger.info("Chronos model loaded: %s", self.model_name)
-        except Exception as exc:
-            self.logger.warning("Chronos loading failed: %s", exc)
-            self.pipe = None
+        except (OSError, FileNotFoundError) as exc:
             self.failed = True
+            self.failure_reason = "模型权重缺失"
+            self.pipe = None
+            self.logger.warning("Chronos loading failed (模型权重缺失): %s", exc)
+        except Exception as exc:
+            self.failed = True
+            self.failure_reason = "推理失败"
+            self.pipe = None
+            self.logger.warning("Chronos loading failed (推理失败): %s", exc)
 
     def correct(self, residuals: np.ndarray) -> Tuple[float, Tuple[float, float]]:
         """对残差序列做一步预测，返回 (点预测, (下分位, 上分位))。
@@ -95,6 +114,7 @@ class ChronosResidualCorrector:
         return {
             "model_name": self.model_name,
             "failed": self.failed,
+            "failure_reason": self.failure_reason,
             "total_calls": self._total_calls,
             "avg_inference_ms": round(avg_time * 1000, 1),
         }

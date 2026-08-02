@@ -1169,7 +1169,8 @@ def render_nowcast(data: Dict[str, Any]) -> None:
         chronos_text = f"Chronos 残差修正：已启用，修正量 {chronos_correction:+.3f} 个百分点"
         chronos_color = COLORS["accent_cyan"]
     elif chronos_state == "failed":
-        chronos_text = "Chronos 残差修正：模型加载失败，已跳过（不影响主预测）"
+        reason = prediction.get("chronos_failure_reason") or "未知原因"
+        chronos_text = f"Chronos 残差修正：{reason}，已跳过（不影响主预测）"
         chronos_color = COLORS["accent_amber"]
     else:
         chronos_text = "Chronos 残差修正：未加载"

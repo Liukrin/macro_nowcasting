@@ -283,13 +283,16 @@ class PredictionEngine:
 
         # Chronos residual correction (lazy load on first call)
         chronos_correction = 0.0
+        chronos_failure_reason = None
         if self._chronos_state == "not_loaded":
             try:
                 from .chronos_adapter import ChronosResidualCorrector
                 self._chronos_corrector = ChronosResidualCorrector("amazon/chronos-bolt-tiny")
                 self._chronos_state = "ready" if not self._chronos_corrector.failed else "failed"
+                chronos_failure_reason = self._chronos_corrector.failure_reason
             except Exception:
                 self._chronos_state = "failed"
+                chronos_failure_reason = "依赖未安装"
         if self._chronos_state == "ready" and self._chronos_corrector is not None:
             try:
                 # Use training residuals as context
@@ -326,6 +329,7 @@ class PredictionEngine:
             "top_features": self.selected_model.get_feature_importance(10),
             "chronos_correction": chronos_correction,
             "chronos_state": self._chronos_state,
+            "chronos_failure_reason": chronos_failure_reason,
             "target_transform": self.config.features.target_transform,
             "notes": notes,
         }
