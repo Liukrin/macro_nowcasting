@@ -24,6 +24,18 @@ from .logging_utils import get_logger
 _CN_DIGITS = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
 _CN_TEN = '十'
 
+# 内置"已知局限"占位文本：artifacts/final/known_limitations.md 缺失时使用
+_BUILTIN_LIMITATIONS_TEXT = (
+    "# 已知局限\n"
+    "## 1. 单季同比口径不可用\n四川GDP累计值序列存在vintage断点，单季同比(qoq_yoy)口径已弃用。\n"
+    "## 2. feature_vintage未实现\n当前使用季度完整数据，严格来说为同期回归(contemporaneous)而非严格nowcasting。\n"
+    "## 3. target_lag_1未进入特征集\n16特征cap下target_lag_1被挤掉，模型缺少y_{t-1}锚点。\n"
+    "## 4. chronos可选依赖\n云端不安装torch时Chronos残差修正自动跳过，不影响主预测。\n"
+    "## 5. 样本量限制\n回测窗口数有限，统计检验功效有限。\n"
+    "## 6. 数据覆盖\n国家月度数据截至2025-09，四川月度数据截至2025-12，2025Q4 GDP为估算值。\n"
+    "## 7. 共享可变状态\nst.cache_resource跨会话共享engine，单人演示可接受，生产需每会话独立实例或加锁。\n"
+)
+
 
 def _normalize_chinese_numbers(text: str) -> str:
     """将中文数字统一为阿拉伯数字。正确处理"十一"→11、"二十"→20、"二十三"→23。"""
@@ -138,12 +150,14 @@ def _extract_query_filters(query: str, entity_set: set[str]) -> dict:
 class RAGService:
     """检索增强生成服务。"""
 
-    def __init__(self, config: "AppConfig") -> None:
+    def __init__(self, config: "AppConfig", engine: Optional["PredictionEngine"] = None) -> None:
         self.logger = get_logger("sc_macro_agent.rag")
         self.config = config
         self.data_dir = config.data.resolve_dir()
         self.artifacts_dir = config.data.resolve_artifact_dir(create=False) / "final"
         self.llm = LLMClient.get_instance()
+        # 复用外部传入的 engine（app 传 load_engine()），不再自行触发流水线
+        self.engine = engine
         self.vectorizer: Optional[TfidfVectorizer] = None
         self.doc_vectors: Optional[np.ndarray] = None
         self.documents: List[Dict[str, Any]] = []
@@ -217,55 +231,39 @@ class RAGService:
         return cards
 
     def _build_project_docs(self) -> List[Dict[str, Any]]:
-        """从 artifacts/final/ 构建项目文档片段。"""
-        docs = []
-        for fname in ["data_lineage.md", "known_limitations.md"]:
-            fp = self.artifacts_dir / fname
-            if not fp.exists():
-                self.logger.warning("Missing artifact: %s", fp)
-                continue
-            text = fp.read_text(encoding="utf-8")
-            # Normalize Windows \r\n to \n so regex matches on all platforms
-            text = text.replace('\r\n', '\n')
-            # Split by sections, preserving ## / # headers for TF-IDF context.
-            # v3: merge standalone title-only fragments (e.g. "# 数据溯源台账",
-            # <20 single-line chars) into the next section so they are not
-            # independent TF-IDF documents that monopolize query scoring.
-            raw_sections = re.split(r"\n(?=##?\s)", text)
-            sections: list[str] = []
-            i = 0
-            while i < len(raw_sections):
-                sec = raw_sections[i].strip()
-                # Title-only fragment: single line, short, no body text
-                is_title = ('\n' not in sec and len(sec) < 20)
-                if is_title and i + 1 < len(raw_sections):
-                    # merge into next section
-                    next_sec = raw_sections[i + 1].strip()
-                    sec = sec + '\n' + next_sec
-                    i += 1
-                if len(sec) >= 3:
-                    sections.append(sec)
-                i += 1
+        """从 artifacts/final 文件 + engine 实时状态构建项目文档片段。
 
-            for sec in sections:
-                docs.append({
-                    "text": sec[:2000],
-                    "metadata": {"type": "project_doc", "source_file": fname},
-                })
+        文件存在时优先读文件；engine 提供实时回测指标/审计/前瞻预测。
+        两条路都要能产出文档，云端缺 artifacts/ 时依然有语料。
+        """
+        docs: List[Dict[str, Any]] = []
 
-        # final_metrics
+        # --- 已知局限：文件存在读文件，否则用内置中文占位文本 ---
+        kl_path = self.artifacts_dir / "known_limitations.md"
+        if kl_path.exists():
+            kl_text = kl_path.read_text(encoding="utf-8")
+        else:
+            kl_text = _BUILTIN_LIMITATIONS_TEXT
+        docs.extend(self._split_markdown_sections(kl_text, "known_limitations.md"))
+
+        # --- data_lineage：仅文件（无则跳过） ---
+        dl_path = self.artifacts_dir / "data_lineage.md"
+        if dl_path.exists():
+            docs.extend(self._split_markdown_sections(dl_path.read_text(encoding="utf-8"), "data_lineage.md"))
+
+        # --- final_metrics / backtest_predictions：文件存在则读 ---
         fp = self.artifacts_dir / "final_metrics.csv"
         if fp.exists():
             df = pd.read_csv(fp)
             for _, row in df.iterrows():
-                text = f"模型 {row['model']} 的评估指标：RMSE={row['rmse']:.4f}, MAE={row['mae']:.4f}, R²={row['r2']:.4f}, 方向准确率={row['dir_acc']:.4f}。"
+                text = (f"模型 {row['model']} 的评估指标：RMSE={row['rmse']:.4f}, "
+                        f"MAE={row['mae']:.4f}, R²={row['r2']:.4f}, 方向准确率={row['dir_acc']:.4f}。")
                 docs.append({
                     "text": text,
                     "metadata": {"type": "model_metric", "model": row["model"]},
                 })
                 self._entity_set.add(str(row["model"]))
 
-        # backtest predictions
         fp = self.artifacts_dir / "backtest_predictions.csv"
         if fp.exists():
             df = pd.read_csv(fp)
@@ -273,7 +271,6 @@ class RAGService:
                 text = (f"{row['test_quarter']}季度，四川省GDP累计同比实际值为{row['actual']:.1f}%，"
                         f"elastic_midas_chronos模型预测值为{row['elastic_midas_chronos']:.1f}%，"
                         f"last_value基准预测值为{row['last_value']:.1f}%。")
-                # Extract year from test_quarter
                 y = None
                 qm = re.match(r'(\d{4})Q(\d)', str(row['test_quarter']))
                 if qm:
@@ -284,28 +281,88 @@ class RAGService:
                                 "year": y if y else None},
                 })
 
-        # Latest forward prediction (for Q7: future forecast)
-        try:
-            from .prediction_engine import PredictionEngine
-            engine = PredictionEngine(self.config)
-            engine.run_agent(goal="audit_build_train", save_artifacts=False)
-            pred = engine.predict_next()
-            date_str = pd.Timestamp.now().strftime("%Y-%m-%d")
-            text = (
-                f"以下为模型预测值，非官方统计数据：模型预测{pred['prediction_quarter']}"
-                f"四川省GDP累计同比增速为{pred['prediction_value']:.2f}%，"
-                f"90%置信区间[{pred['confidence_interval']['lower']}, {pred['confidence_interval']['upper']}]，"
-                f"预测生成于{date_str}。"
-                f"模型为{pred['model_name']}，使用delta差分参数化。"
-            )
-            docs.append({
-                "text": text,
-                "metadata": {"type": "forward_prediction", "quarter": pred["prediction_quarter"],
-                            "value": pred["prediction_value"], "date": date_str},
-            })
-        except Exception:
-            pass  # silently skip if engine not available
+        # --- 实时构建：回测指标 / 数据审计 ← engine ---
+        if self.engine is not None:
+            docs.extend(self._build_realtime_engine_docs())
+        else:
+            self.logger.warning("No engine provided to RAGService; realtime backtest/audit docs skipped")
 
+        # --- 前瞻预测：复用传入 engine，不自行触发流水线 ---
+        if self.engine is not None:
+            try:
+                pred = getattr(self.engine, "latest_prediction", None) or self.engine.predict_next()
+                ci = pred.get("confidence_interval") or {}
+                lower = ci.get("lower", "N/A")
+                upper = ci.get("upper", "N/A")
+                if lower == "N/A":
+                    ci_text = "未运行回测，无置信区间"
+                else:
+                    ci_text = f"90%置信区间[{lower}, {upper}]"
+                pred_q = pred.get("prediction_quarter", pred.get("nowcast_quarter", "N/A"))
+                date_str = pd.Timestamp.now().strftime("%Y-%m-%d")
+                text = (
+                    f"以下为模型预测值，非官方统计数据：模型预测{pred_q}"
+                    f"四川省GDP累计同比增速为{pred['prediction_value']:.2f}%，{ci_text}，"
+                    f"预测生成于{date_str}。模型为{pred['model_name']}，使用delta差分参数化。"
+                )
+                docs.append({
+                    "text": text,
+                    "metadata": {"type": "forward_prediction", "quarter": pred_q,
+                                "value": pred["prediction_value"], "date": date_str},
+                })
+            except Exception as exc:
+                self.logger.warning("forward_prediction doc build failed: %s", exc)
+        else:
+            self.logger.warning("No engine provided to RAGService; forward_prediction doc skipped")
+
+        return docs
+
+    def _build_realtime_engine_docs(self) -> List[Dict[str, Any]]:
+        """从 engine 实时状态构建回测指标与数据审计文档（不依赖 artifacts 文件）。"""
+        docs: List[Dict[str, Any]] = []
+        bt = getattr(self.engine, "backtest_result", None) or {}
+        metrics = bt.get("metrics")
+        if metrics:
+            model_name = getattr(self.engine, "selected_model_name", None) or "selected_model"
+            rmse = metrics.get("rmse", 0.0)
+            mae = metrics.get("mae", 0.0)
+            r2 = metrics.get("r2", 0.0)
+            dir_acc = metrics.get("direction_accuracy", 0.0)
+            text = (f"模型 {model_name} 的回测评估指标：RMSE={rmse:.4f}, MAE={mae:.4f}, "
+                    f"R²={r2:.4f}, 方向准确率={dir_acc:.4f}。")
+            docs.append({"text": text, "metadata": {"type": "model_metric", "model": model_name}})
+            self._entity_set.add(model_name)
+        audit = getattr(self.engine, "audit_result", None)
+        if audit:
+            summary_txt = audit.get("summary")
+            if isinstance(summary_txt, dict):
+                summary_txt = str(summary_txt)
+            if summary_txt:
+                docs.append({"text": f"数据审计结论：{str(summary_txt)[:2000]}",
+                             "metadata": {"type": "project_doc", "source_file": "audit_result"}})
+        return docs
+
+    @staticmethod
+    def _split_markdown_sections(text: str, source_file: str) -> List[Dict[str, Any]]:
+        """把 markdown 按 ## / # 标题切成片段，返回 project_doc 文档。"""
+        docs: List[Dict[str, Any]] = []
+        text = text.replace('\r\n', '\n')
+        raw_sections = re.split(r"\n(?=##?\s)", text)
+        sections: list[str] = []
+        i = 0
+        while i < len(raw_sections):
+            sec = raw_sections[i].strip()
+            # 仅标题的短片段并入下一段，避免独占 TF-IDF 打分
+            is_title = ('\n' not in sec and len(sec) < 20)
+            if is_title and i + 1 < len(raw_sections):
+                next_sec = raw_sections[i + 1].strip()
+                sec = sec + '\n' + next_sec
+                i += 1
+            if len(sec) >= 3:
+                sections.append(sec)
+            i += 1
+        for sec in sections:
+            docs.append({"text": sec[:2000], "metadata": {"type": "project_doc", "source_file": source_file}})
         return docs
 
     # ================================================================
@@ -478,11 +535,11 @@ class RAGService:
 _rag_instance: Optional[RAGService] = None
 
 
-def get_rag(config: Optional["AppConfig"] = None) -> RAGService:
+def get_rag(config: Optional["AppConfig"] = None, engine: Optional["PredictionEngine"] = None) -> RAGService:
     global _rag_instance
     if _rag_instance is None:
         if config is None:
             from .config import AppConfig as _AppConfig
             config = _AppConfig()
-        _rag_instance = RAGService(config)
+        _rag_instance = RAGService(config, engine)
     return _rag_instance

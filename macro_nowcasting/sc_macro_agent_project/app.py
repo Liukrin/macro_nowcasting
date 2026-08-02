@@ -352,27 +352,46 @@ def render_warning_pills(items: Iterable[str]) -> None:
         st.markdown(html, unsafe_allow_html=True)
 
 
-@st.cache_resource(show_spinner="正在初始化引擎…")
+@st.cache_resource(show_spinner=False)
 def load_engine() -> PredictionEngine:
     import os, sys
     _tick("load_engine:enter")
     if _TIMING_ON:
-        print(f"[ENV] SC_MACRO_FULL_PIPELINE={os.environ.get('SC_MACRO_FULL_PIPELINE')}", file=sys.stderr, flush=True)
+        print(f"[ENV] SC_MACRO_LIGHT_MODE={os.environ.get('SC_MACRO_LIGHT_MODE')}", file=sys.stderr, flush=True)
     config = AppConfig.from_env()
     engine = PredictionEngine(config=config)
     _tick("load_engine:engine_constructed")
     from sc_macro_agent.llm.client import LLMClient
     LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
-    # Cloud 环境默认轻量模式：只审计数据+构建特征，跳过训练和回测（资源不足）
-    # 本地设置 SC_MACRO_FULL_PIPELINE=true 启用完整流水线
-    goal = "audit_build"
-    if os.environ.get("SC_MACRO_FULL_PIPELINE", "").lower() == "true":
-        goal = "audit_build_train_backtest_report"
+    # 默认跑完整流水线：审计 → 构建特征 → 训练 → 回测 → 预测；
+    # SC_MACRO_LIGHT_MODE=true 时退回轻量（仅审计+构建特征）。
+    # （原 SC_MACRO_FULL_PIPELINE 变量已废弃）
+    light_mode = os.environ.get("SC_MACRO_LIGHT_MODE", "").lower() == "true"
     _tick("load_engine:before_run_agent")
     try:
-        engine.run_agent(goal=goal, save_artifacts=False)
+        engine.initialize()
+        if light_mode:
+            with st.status("轻量模式：仅审计数据与构建特征…", expanded=False) as _status:
+                engine.audit_data(save_artifacts=False)
+                engine.build_features()
+                _status.update(label="轻量模式初始化完成（未训练/未回测）", state="complete")
+        else:
+            with st.status("正在初始化引擎（审计数据 → 构建特征 → 训练模型 → 运行回测）…", expanded=False) as _status:
+                engine.audit_data(save_artifacts=False)
+                _status.update(label="正在构建特征…")
+                engine.build_features()
+                _status.update(label="正在训练模型…")
+                engine.train()
+                _status.update(label="正在运行回测…")
+                try:
+                    engine.backtest()
+                except Exception as bt_exc:
+                    engine.warnings.append(str(bt_exc))
+                    engine.agent.record_warning(str(bt_exc))
+                _status.update(label="正在生成预测…")
+                engine.predict_next()
+                _status.update(label="引擎初始化完成", state="complete")
     except Exception as e:
-        import sys
         print(f"[WARN] Pipeline init failed: {e}", file=sys.stderr)
         engine._init_error = str(e)
     _tick("load_engine:after_run_agent")
@@ -389,6 +408,13 @@ def load_engine() -> PredictionEngine:
 def load_view_data(_: int) -> Dict[str, Any]:
     _tick("load_view_data:enter")
     engine = load_engine()
+    # 先取预测（predict 内部触发 train 时会赋值 selected_model），
+    # 再 summarize，确保 summary 里 selected_model / leaderboard / top_features 有值
+    try:
+        prediction = getattr(engine, "latest_prediction", None) or engine.predict_next()
+    except Exception:
+        prediction = None
+    _tick("load_view_data:after_predict_next")
     try:
         status = engine.get_status()
         _tick("load_view_data:after_get_status")
@@ -397,11 +423,6 @@ def load_view_data(_: int) -> Dict[str, Any]:
     except Exception:
         status = {"phase": "init_error", "completed": False}
         summary = {}
-    try:
-        prediction = summary.get("prediction") or engine.predict_next()
-    except Exception:
-        prediction = None
-    _tick("load_view_data:after_predict_next")
     audit_result = getattr(engine, "audit_result", None) or {}
     backtest = getattr(engine, "backtest_result", None) or {}
     factor_summary = engine.get_factor_summary() if hasattr(engine, "get_factor_summary") else {}
@@ -1213,13 +1234,9 @@ def render_factors(data: Dict[str, Any]) -> None:
     if engine.feature_artifacts is not None:
         feats = engine.feature_artifacts.feature_columns
         st.caption(f"当前特征集（{engine.config.features.target_transform} 模式）: {len(feats)} 个特征")
-        import json
-        fl_path = engine.config.data.resolve_artifact_dir(create=False) / "final" / "feature_list.json"
-        if fl_path.exists():
-            with open(fl_path, encoding="utf-8") as f:
-                fl = json.load(f)
-            fl_df = pd.DataFrame(fl)
-            st.dataframe(fl_df, use_container_width=True, hide_index=True)
+        # 实时从 feature_artifacts 取特征列表，不依赖 artifacts/final/feature_list.json
+        fl_df = pd.DataFrame([{"feature": f} for f in feats])
+        st.dataframe(fl_df, use_container_width=True, hide_index=True)
 
     score_df = feature_score_df(top_features_df)
     if not score_df.empty:
@@ -1411,7 +1428,8 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
 def get_rag_service():
     """RAG 服务模块级缓存：避免每次渲染重建 TF-IDF 语料。"""
     from sc_macro_agent.rag_service import RAGService
-    return RAGService(config=load_engine().config)
+    engine = load_engine()
+    return RAGService(config=engine.config, engine=engine)
 
 
 def render_rag_page(data: Dict[str, Any]) -> None:
@@ -1747,6 +1765,10 @@ def main() -> None:
     _tick("main:enter")
     data = load_view_data(1)
     _tick("main:after_load_view_data")
+    # 引擎初始化失败时在页面顶部显式提示（不要只 print 到 stderr）
+    _init_err = getattr(data["engine"], "_init_error", None)
+    if _init_err:
+        st.warning(f"流水线初始化失败，部分功能不可用：{_init_err}")
     page, refresh = sidebar_controls(data)
 
     if refresh:
