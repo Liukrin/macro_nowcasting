@@ -21,7 +21,8 @@ _PRICE_PROMPT_PER_1K = 0.001       # CNY / 1K input tokens
 _PRICE_COMPLETION_PER_1K = 0.002   # CNY / 1K output tokens
 
 # 单次 chat 总耗时上限（含重试）：超过则直接降级 mock，避免云端长时间挂起
-_MAX_CHAT_TOTAL_SECONDS = 60.0
+# 依据：Critic 单次成功调用输出 1600+ token，60s 预算在网络波动时不足，实测已导致降级 mock
+_MAX_CHAT_TOTAL_SECONDS = 120.0
 
 # 整轮工具循环总耗时上限（阶段 2 使用，本阶段只提供常量与辅助函数）
 _MAX_TOOL_LOOP_SECONDS = 90.0
@@ -127,7 +128,7 @@ class LLMClient:
         if not self.is_mock:
             try:
                 from openai import OpenAI
-                self._client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=20.0)
+                self._client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=45.0)
                 self.logger.info("LLM client initialized (DeepSeek)")
             except ImportError:
                 self.logger.warning("openai not installed, falling back to mock")

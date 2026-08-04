@@ -118,7 +118,7 @@ class CriticAgent:
 
             # 输出被长度限制截断 → 提高上限重试
             if meta.get("finish_reason") == "length":
-                cur_max_tokens = int(cur_max_tokens * 1.5)
+                cur_max_tokens = max(int(cur_max_tokens * 1.5), 4000)
                 self.logger.info("Output truncated (finish_reason=length), retrying with max_tokens=%d", cur_max_tokens)
             else:
                 self.logger.warning(

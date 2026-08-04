@@ -1,5 +1,5 @@
 id: critic_review
-version: "1.2.0"
+version: "1.3.0"
 description: "经济简报审查 —— 五维检查 + 结构化 JSON 输出"
 system: |
   你是经济简报的严格审阅者。逐项检查以下五项。
@@ -59,8 +59,11 @@ user_template: |
   简报：
   {briefing}
 default_temperature: 0.1
-default_max_tokens: 2000
+default_max_tokens: 3500
 changelog:
+  - version: "1.3.0"
+    date: "2026-08-03"
+    changes: "default_max_tokens 2000→3500。trace 实测 attempt1 在 2000 上限下 finish_reason=length 且 content 为空，需靠自适应重试用 3000 才成功（completion=1593）。撞墙重试使单次审阅耗时翻倍并放大超时失败概率。"
   - version: "1.2.0"
     date: "2026-08-02"
     changes: "system prompt 开头增加\"只输出 JSON，不要解释文字，不要 markdown 代码块\"约束；critic_agent 改用括号配对扫描替代贪婪正则提取 JSON"
