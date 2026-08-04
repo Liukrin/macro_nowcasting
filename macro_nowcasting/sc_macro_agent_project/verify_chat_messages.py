@@ -38,7 +38,17 @@ result1 = client.chat(
     caller="verify_test",
 )
 print(f"chat() result (first 80 chars): {result1[:80]}")
-print(f"_meta: {json.dumps(client._meta, ensure_ascii=False, default=str)}")
+# _meta 已移除 —— 用 chat_messages() 获取元信息
+result1b = client.chat_messages(
+    messages=[
+        {"role": "system", "content": "你是一个经济分析助手。回答简洁。"},
+        {"role": "user", "content": "四川省2024年GDP增速是多少？"},
+    ],
+    caller="verify_test",
+)
+print(f"chat_messages() finish_reason: {result1b['finish_reason']}, is_mock: {result1b['is_mock']}, "
+      f"prompt_tokens: {result1b['prompt_tokens']}, completion_tokens: {result1b['completion_tokens']}, "
+      f"latency_ms: {result1b['latency_ms']:.0f}")
 print()
 
 # ================================================================

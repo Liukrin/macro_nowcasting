@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from ..llm.client import LLMClient
 from ..logging_utils import get_logger
 from ..prompts.registry import render
+from .schemas import CriticReview
 
 
 def _extract_json(raw: str) -> dict | None:
@@ -106,7 +107,14 @@ class CriticAgent:
             raw = meta["response"]
             result = _extract_json(raw)
             if result is not None:
-                return result
+                validated = CriticReview.from_raw(result)
+                if not validated.critic_error:
+                    return validated.model_dump()
+                # 结构校验降级 —— 视同解析失败，继续重试
+                self.logger.warning(
+                    "CriticReview.from_raw 降级，原始输出（前300字符）：%s",
+                    raw[:300],
+                )
 
             # 输出被长度限制截断 → 提高上限重试
             if meta.get("finish_reason") == "length":

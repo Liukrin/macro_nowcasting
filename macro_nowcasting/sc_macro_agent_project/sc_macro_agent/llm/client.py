@@ -120,7 +120,6 @@ class LLMClient:
         self._last_failure_ts = 0.0
         self._total_time = 0.0
         self._client = None
-        self._meta: dict = {}  # 最近一次 chat() 的元信息，供 chat_with_meta() 读取
 
         # trace 落盘目录，惰性计算一次后缓存
         self._traces_dir: Optional[Path] = None
@@ -329,16 +328,8 @@ class LLMClient:
                 "latency_ms": resp["latency_ms"],
             }
 
-        # --- 辅助：设置 _meta 并写入 trace ---
+        # --- 辅助：写入 trace ---
         def _finalize(result: dict, is_mock: bool, error: str | None) -> None:
-            self._meta = {
-                "finish_reason": result["finish_reason"],
-                "is_mock": is_mock,
-                "prompt_tokens": result["prompt_tokens"],
-                "completion_tokens": result["completion_tokens"],
-                "cache_hit_tokens": result["cache_hit_tokens"],
-                "latency_ms": result["latency_ms"],
-            }
             self._write_trace(
                 response=result["content"],
                 is_mock=is_mock,
@@ -389,7 +380,7 @@ class LLMClient:
             _finalize(result, False, None)
             return result
         except Exception as exc:
-            self.logger.error("LLM call failed after 3 retries: %s", exc)
+            self.logger.error("LLM call failed after 2 attempts: %s", exc)
             self._consecutive_failures += 1
             if self._consecutive_failures >= 5:
                 self.is_mock = True
@@ -476,17 +467,26 @@ class LLMClient:
 
     def chat_with_meta(self, system: str, user: str, temperature: float = 0.3, max_tokens: int = 1500,
                        prompt_id: str = "", prompt_version: str = "", caller: str = "") -> dict:
-        """调用 chat() 并返回完整元信息。"""
-        response = self.chat(system, user, temperature, max_tokens,
-                             prompt_id=prompt_id, prompt_version=prompt_version, caller=caller)
+        """直接调用 chat_messages() 并返回完整元信息。
+
+        不再经过 chat() 中转，元信息从 chat_messages() 返回值直接提取，
+        彻底消除 self._meta 共享状态带来的并发串扰风险。
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        r = self.chat_messages(messages, temperature=temperature,
+                               max_tokens=max_tokens, prompt_id=prompt_id,
+                               prompt_version=prompt_version, caller=caller)
         return {
-            "response": response,
-            "finish_reason": self._meta.get("finish_reason", ""),
-            "is_mock": self._meta.get("is_mock", False),
-            "prompt_tokens": self._meta.get("prompt_tokens", 0),
-            "completion_tokens": self._meta.get("completion_tokens", 0),
-            "cache_hit_tokens": self._meta.get("cache_hit_tokens", 0),
-            "latency_ms": self._meta.get("latency_ms", 0.0),
+            "response": r["content"],
+            "finish_reason": r["finish_reason"],
+            "is_mock": r["is_mock"],
+            "prompt_tokens": r["prompt_tokens"],
+            "completion_tokens": r["completion_tokens"],
+            "cache_hit_tokens": r["cache_hit_tokens"],
+            "latency_ms": r["latency_ms"],
         }
 
     def _mock_response(self, _system: str, user: str) -> str:

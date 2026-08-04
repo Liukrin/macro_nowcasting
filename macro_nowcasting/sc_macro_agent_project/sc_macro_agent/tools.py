@@ -7,6 +7,7 @@ OpenAI 格式的 function calling 工具定义与分发器。
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 # ================================================================
@@ -24,7 +25,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "month 为 1-12 的月份（如 6 表示 6 月）。"
                 "quarter 和 month 互斥，只能指定其中一个，不可同时提供。"
                 "region 默认为'四川省'。"
-                "indicator 使用包含式模糊匹配，可以写简称（如'GDP增速'可匹配'GDP_累计同比增速'）。"
+                "indicator 支持模糊匹配，可写简称。"
             ),
             "parameters": {
                 "type": "object",
@@ -138,3 +139,41 @@ def dispatch(rag: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return rag.get_prediction()
     else:
         return {"error": f"未知工具: {name}"}
+
+
+# ================================================================
+# 工具 schema 构建：从语料注入真实指标名，与语料自动对齐
+# ================================================================
+
+def build_tool_schemas(rag: Any | None) -> list[dict]:
+    """深拷贝 TOOL_SCHEMAS，将真实指标名注入 query_indicator 的 description。
+
+    rag 为 None 或取不到指标时，返回未注入的深拷贝（不抛异常）。
+    调用方应缓存结果；模块常量 TOOL_SCHEMAS 永远不会被修改。
+    """
+    schemas = copy.deepcopy(TOOL_SCHEMAS)
+
+    # 尝试取真实指标名
+    indicator_names: list[str] = []
+    if rag is not None:
+        try:
+            result = rag.list_indicators()
+            names = sorted(set(
+                e["name"] for e in result.get("indicators", [])
+            ))
+            indicator_names = names[:25]
+        except Exception:
+            pass
+
+    if not indicator_names:
+        return schemas
+
+    names_str = "、".join(indicator_names)
+    suffix = f"\n可用指标名（请优先使用其中之一）：{names_str}"
+
+    for schema in schemas:
+        if schema.get("function", {}).get("name") == "query_indicator":
+            schema["function"]["description"] += suffix
+            break
+
+    return schemas

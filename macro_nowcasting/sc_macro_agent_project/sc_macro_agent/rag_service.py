@@ -260,6 +260,57 @@ def _is_meta_question(question: str) -> bool:
 
 
 # ================================================================
+# 概念/方法论问题前置路由 —— 挡在工具循环之外
+# ================================================================
+
+# 条件 A —— 概念提问句式
+_METHODOLOGY_SENTENCE_PATTERNS = re.compile(
+    r'是什么|什么是|原理|怎么工作|如何工作|为什么用|'
+    r'有什么区别|区别是什么|介绍一下|解释一下|含义|概念'
+)
+
+# 条件 A —— 方法论术语
+_METHODOLOGY_TERMS = re.compile(
+    r'MIDAS|DFM|TSLM|Chronos|PCA|卡尔曼|Kalman|'
+    r'混频|nowcast|现时预测|动态因子|岭回归|Ridge|'
+    r'ElasticNet|GBRT|回测|expanding|RAG|Agent|智能体'
+)
+
+# 条件 B —— 数值查询信号（命中任一即排除）
+_NUMERICAL_QUERY_YEAR = re.compile(r'\b(19|20)\d{2}\b')
+_NUMERICAL_QUERY_PERIOD = re.compile(
+    r'季度|Q1|Q2|Q3|Q4|一季度|二季度|三季度|四季度|月份|月'
+)
+_NUMERICAL_QUERY_VALUE = re.compile(
+    r'是多少|多少|数值|几|增速是|值为'
+)
+
+
+def _is_methodology_question(question: str) -> bool:
+    """高置信度判定概念/方法论问题，命中则跳过工具循环。
+
+    条件 A：同时命中概念提问句式 + 方法论术语。
+    条件 B：不含任何数值查询信号（年份/季度/月份/取值词）。
+    两个条件缺一不可 —— 误判代价不对称，宁可漏过不可错杀。
+    """
+    # 条件 A
+    has_sentence = bool(_METHODOLOGY_SENTENCE_PATTERNS.search(question))
+    has_term = bool(_METHODOLOGY_TERMS.search(question))
+    if not (has_sentence and has_term):
+        return False
+
+    # 条件 B：任何数值信号命中即排除
+    if _NUMERICAL_QUERY_YEAR.search(question):
+        return False
+    if _NUMERICAL_QUERY_PERIOD.search(question):
+        return False
+    if _NUMERICAL_QUERY_VALUE.search(question):
+        return False
+
+    return True
+
+
+# ================================================================
 # PMI 分项前缀映射
 # ================================================================
 _PMI_SUBINDEX_PREFIX_MAP: dict[str, str] = {
@@ -350,6 +401,10 @@ class RAGService:
         self._build_caliber_lookup()
         self._build_corpus()
         self._build_index()
+
+        # 缓存注入真实指标名后的工具 schema（语料在构造期已冻结）
+        from .tools import build_tool_schemas
+        self._tool_schemas = build_tool_schemas(self)
 
     # ================================================================
     # 口径标注查找
@@ -479,6 +534,17 @@ class RAGService:
         else:
             dl_text = _BUILTIN_LINEAGE_TEXT
         docs.extend(self._split_markdown_sections(dl_text, "data_lineage.md"))
+
+        # methodology.md: docs/ 优先（源码版本控制），artifacts/final/ 作为运行产物兜底
+        mh_path = Path(__file__).parent.parent / "docs" / "methodology.md"
+        if not mh_path.exists():
+            mh_path = self.artifacts_dir / "methodology.md"
+        if mh_path.exists():
+            mh_text = mh_path.read_text(encoding="utf-8")
+        else:
+            mh_text = ""
+        if mh_text.strip():
+            docs.extend(self._split_markdown_sections(mh_text, "methodology.md"))
 
         if self.engine is not None:
             docs.extend(self._build_model_metric_docs())
@@ -980,7 +1046,7 @@ class RAGService:
         """
         import json as _json
         import time as _time
-        from .tools import TOOL_SCHEMAS, dispatch as _dispatch
+        from .tools import dispatch as _dispatch
         from .llm.client import sanitize_assistant_message, make_deadline, check_deadline
 
         t_start = _time.perf_counter()
@@ -990,6 +1056,7 @@ class RAGService:
         tool_calls_log: list[dict] = []
         sources: list = []
         route: str = "rag"
+        route_reason: str = ""
         answer: str = ""
 
         # ---- token / cost 追踪（与 app.py _trace_cost 同一公式）----
@@ -1016,7 +1083,7 @@ class RAGService:
             from .prompts.registry import render
             qa_prompt = render("rag_qa", context="", question=question, retrieval_note="")
         except Exception:
-            qa_prompt = {"system": "你是经济数据分析助手。优先使用工具查询数据。", "temperature": 0.3, "max_tokens": 1200}
+            qa_prompt = {"system": "你是经济数据分析助手。优先使用工具查询数据。", "temperature": 0.3, "max_tokens": 1200, "version": "fallback"}
 
         # 构建消息列表
         system_msg = qa_prompt["system"]
@@ -1027,21 +1094,59 @@ class RAGService:
 
         deadline = make_deadline()
         max_tool_rounds = 2
+        _TOOL_DECISION_MAX_TOKENS = 400
         any_tool_called = False
         any_found_or_available = False
+        tool_decision = {"round0_finish_reason": "", "round0_completion_tokens": 0,
+                         "round0_retried": False}
+
+        # --- 概念/方法论问题前置路由：高置信度判定则跳过工具循环 ---
+        skip_tool_loop = _is_methodology_question(question)
+        if skip_tool_loop:
+            tool_decision = {"round0_finish_reason": "skipped",
+                             "round0_completion_tokens": 0,
+                             "round0_retried": False}
+            route_reason = "methodology_bypass"
+            self.logger.info("概念问题前置路由：跳过工具循环 question=%.80s", question)
 
         for tool_round in range(max_tool_rounds):
+            if skip_tool_loop:
+                break
             if not check_deadline(deadline):
                 self.logger.warning("Tool loop timeout after round %d", tool_round)
                 break
 
+            round_max_tokens = _TOOL_DECISION_MAX_TOKENS if tool_round == 0 else 1200
             resp = self.llm.chat_messages(
-                messages, tools=TOOL_SCHEMAS,
-                temperature=0.1, max_tokens=1200,
-                prompt_id="rag_qa", prompt_version="2.0.0",
+                messages, tools=self._tool_schemas,
+                temperature=0.1, max_tokens=round_max_tokens,
+                prompt_id="rag_qa", prompt_version=qa_prompt.get("version", "unknown"),
                 caller="rag_tool",
             )
             _acc_tokens(resp)
+
+            # --- 记录 tool_decision 诊断信息 ---
+            if tool_round == 0:
+                tool_decision["round0_completion_tokens"] = resp.get("completion_tokens", 0)
+
+            # --- 截断护栏：round-0 被截断则用 1200 重发一次 ---
+            if tool_round == 0 and resp.get("finish_reason") == "length":
+                self.logger.warning(
+                    "工具决策轮输出被截断（max_tokens=%d），用 1200 重发",
+                    _TOOL_DECISION_MAX_TOKENS,
+                )
+                resp = self.llm.chat_messages(
+                    messages, tools=self._tool_schemas,
+                    temperature=0.1, max_tokens=1200,
+                    prompt_id="rag_qa", prompt_version=qa_prompt.get("version", "unknown"),
+                    caller="rag_tool",
+                )
+                _acc_tokens(resp)
+                tool_decision["round0_retried"] = True
+                tool_decision["round0_completion_tokens"] = resp.get("completion_tokens", 0)
+
+            if tool_round == 0:
+                tool_decision["round0_finish_reason"] = resp.get("finish_reason", "")
 
             if resp.get("tool_calls"):
                 any_tool_called = True
@@ -1060,11 +1165,17 @@ class RAGService:
                     try:
                         fn_args = _json.loads(tc["function"]["arguments"])
                     except _json.JSONDecodeError:
-                        fn_args = {}
-                    try:
-                        tool_result = _dispatch(self, fn_name, fn_args)
-                    except Exception as exc:
-                        tool_result = {"error": str(exc)}
+                        self.logger.warning(
+                            "工具参数解析失败 tool=%s raw=%s",
+                            fn_name, tc["function"]["arguments"][:200],
+                        )
+                        fn_args = {"_parse_error": tc["function"]["arguments"]}
+                        tool_result = {"error": "工具参数解析失败", "found": False}
+                    else:
+                        try:
+                            tool_result = _dispatch(self, fn_name, fn_args)
+                        except Exception as exc:
+                            tool_result = {"error": str(exc)}
                     tc_entry = {
                         "name": fn_name,
                         "arguments": fn_args,
@@ -1079,8 +1190,13 @@ class RAGService:
                     if tool_result.get("found") is True or tool_result.get("available") is True:
                         any_found_or_available = True
             else:
-                # LLM 没有发起 tool call，直接用了它的回答
-                answer = resp.get("content", "")
+                # LLM 没有发起 tool call
+                if tool_round == 0:
+                    # 首轮仅用于工具决策，正文一律丢弃，转 RAG 路径
+                    answer = ""
+                    self.logger.debug("首轮未调用工具，丢弃决策轮正文，转 RAG 检索")
+                else:
+                    answer = resp.get("content", "")
                 break
 
         # 工具调用后取最终答案
@@ -1088,7 +1204,7 @@ class RAGService:
             if check_deadline(deadline):
                 resp_final = self.llm.chat_messages(
                     messages, temperature=0.3, max_tokens=1200,
-                    prompt_id="rag_qa", prompt_version="2.0.0",
+                    prompt_id="rag_qa", prompt_version=qa_prompt.get("version", "unknown"),
                     caller="rag_tool",
                 )
                 _acc_tokens(resp_final)
@@ -1099,6 +1215,12 @@ class RAGService:
         # 判定 route
         if any_tool_called and any_found_or_available and answer.strip():
             route = "tool"
+            route_reason = "tool_hit"
+        elif any_tool_called:
+            route_reason = "tool_miss_fallback"
+        elif not skip_tool_loop:
+            route_reason = "no_tool_call"
+        # 若 skip_tool_loop 为 True，route_reason 已在前面设为 methodology_bypass
 
         # 工具路径 found=false 但有 candidates → 把 candidate 信息注入后续 context
         tool_candidates_context = ""
@@ -1227,6 +1349,9 @@ class RAGService:
             "rewrite_reason": rewrite_reason,
             "route": route,
             "tool_calls": tool_calls_log,
+            "tool_decision": tool_decision,
+            "tool_loop_skipped": skip_tool_loop,
+            "route_reason": route_reason,
             "n_history_used": len(compacted_history),
             "elapsed_s": round(elapsed, 2),
             "usage": usage_out,
@@ -1251,7 +1376,17 @@ class RAGService:
         q_chars = set(q)
         t_chars = set(t)
         if not q_chars.issubset(t_chars):
-            return 0.0
+            # 部分匹配降级：查询含口径修饰词（"累计"/"同比"）而标准名中没有时，
+            # 不再直接判零，但得分被压在 [0.65, 0.69] 这条窄带内。
+            #   - coverage < 0.7 直接判零：滤掉真正不相关的指标
+            #   - 上限 0.69：严格低于子集匹配的最低分 0.70，
+            #     保证"完全包含"永远优先于"部分覆盖"
+            #   - 下限效果：0.88*coverage 需 ≥ 0.65 才能过 query_indicator 的命中阈值，
+            #     即实际生效的 coverage 门槛是 0.739，比表面的 0.7 更严
+            coverage = len(q_chars & t_chars) / len(q_chars)
+            if coverage < 0.7:
+                return 0.0
+            return min(0.69, 0.88 * coverage)
         if q == t:
             base = 1.00
         elif q in t:
