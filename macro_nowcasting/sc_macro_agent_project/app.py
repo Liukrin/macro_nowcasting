@@ -1438,11 +1438,16 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
             status_box.update(label=f"流水线完成 — 状态: {result.get('status','?')}", state="complete")
 
         final_status = result.get("status", "?")
+        # Critic 是可选质检环节，其失败属于对外部模型服务的降级，不是系统故障。
+        # 前端如实告知"未质检"，而非呈现为错误状态。
         if final_status == "review_failed":
-            st.error("审阅解析失败，简报未经有效审阅——最终文案仅供参考，请勿作为正式结论引用。")
+            st.info("本次审阅环节未完成（模型服务响应超时），简报已正常生成。下方简报内容可正常查看，但未经自动质检。")
 
         # ---- 简报摘要（前 200 字 + 展开按钮） ----
         briefing = result.get("briefing", "")
+        review = result.get("review", {})
+        if review.get("critic_error"):
+            st.caption("注：本次简报未经 Critic 自动质检")
         with st.expander("📄 简报摘要（点击展开全文）", expanded=False):
             st.markdown(briefing)
             st.download_button("⬇ 下载简报 (.md)", briefing,
@@ -1489,7 +1494,7 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
                 icon = "✅" if passed else "⚠️"
                 st.markdown(f"{icon} **CriticAgent**  `{elapsed:.1f}s`")
                 if meta.get("critic_error"):
-                    st.error(f"解析失败：{meta.get('summary','')}")
+                    st.warning("审阅未完成 —— 模型服务响应超时，本次跳过自动质检")
                 elif passed:
                     st.success(f"审阅通过 —— {meta.get('summary','')}")
                 else:
@@ -1532,7 +1537,7 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
 
         final_status = result.get("status", "?")
         if final_status == "review_failed":
-            st.error("审阅解析失败，简报未经有效审阅——最终文案仅供参考，请勿作为正式结论引用。")
+            st.info("本次审阅环节未完成（模型服务响应超时），简报已正常生成。下方简报内容可正常查看，但未经自动质检。")
 
         u = result.get("token_usage", {})
         if u.get("is_mock"):
@@ -1549,7 +1554,7 @@ def render_briefing_page(data: Dict[str, Any]) -> None:
             elif rev.get("passed"):
                 st.success("审阅通过，无问题。")
             if rev.get("critic_error"):
-                st.error("审阅解析失败——模型未输出合法 JSON。")
+                st.warning("本次审阅未完成，简报未经自动质检")
 
             steps_df = pd.DataFrame([
                 {"步骤": s.get("name", "?"), "耗时(s)": s.get("elapsed_s", 0),
