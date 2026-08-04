@@ -176,9 +176,9 @@ class AgentOrchestrator:
                     break
 
                 # Rewrite needed
-                rewrite_rounds += 1
                 critic_step.close("failed", {"high_issues": len(high_issues)})
                 if rnd < self.MAX_REWRITES:
+                    rewrite_rounds += 1
                     self.logger.info("Critic found %d high issues, rewriting (round %d)",
                                      len(high_issues), rewrite_rounds)
                     _notify(f"审阅未通过（{len(high_issues)} 个高优问题），AnalystAgent 重写…")

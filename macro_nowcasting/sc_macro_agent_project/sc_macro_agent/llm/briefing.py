@@ -125,7 +125,7 @@ class BriefingGenerator:
         }
 
     def generate(self, inputs: Dict[str, Any]) -> str:
-        """生成简报并做数字校验。"""
+        """生成简报并做数字校验。空输出防护参照 CriticAgent.review() 的截断重试。"""
         from ..prompts.registry import render
 
         prompt = render("briefing",
@@ -142,27 +142,40 @@ class BriefingGenerator:
             indicators=inputs["indicators"],
         )
 
-        answer = self.llm.chat(
-            system=prompt["system"], user=prompt["user"],
-            temperature=prompt["temperature"], max_tokens=prompt["max_tokens"],
-            prompt_id=prompt["id"], prompt_version=prompt["version"],
-            caller="briefing",
-        )
-
-        # 数字校验
-        if not self._validate_numbers(answer, prompt["user"]):
-            self.logger.warning("数字校验失败，重试一次")
-            answer = self.llm.chat(
-                system=prompt["system"], user=prompt["user"],
-                temperature=0.2, max_tokens=prompt["max_tokens"],
+        cur_max_tokens = prompt["max_tokens"]
+        for attempt in range(2):
+            meta = self.llm.chat_with_meta(
+                prompt["system"], prompt["user"],
+                temperature=prompt["temperature"], max_tokens=cur_max_tokens,
                 prompt_id=prompt["id"], prompt_version=prompt["version"],
                 caller="briefing",
             )
+            answer = meta["response"]
 
-        return answer
+            # 空输出防护：截断或空内容时放大预算重试一次
+            if meta.get("finish_reason") == "length" or not answer.strip():
+                self.logger.warning(
+                    "简报生成输出异常 finish_reason=%s completion_tokens=%d max_tokens=%d",
+                    meta.get("finish_reason"), meta.get("completion_tokens", 0), cur_max_tokens,
+                )
+                if attempt == 0:
+                    cur_max_tokens = max(int(cur_max_tokens * 1.5), 4500)
+                    continue
+                raise RuntimeError("简报生成返回空内容，已重试一次")
+
+            # 数字校验
+            if not self._validate_numbers(answer, prompt["user"]):
+                self.logger.warning("数字校验失败，重试一次")
+                continue
+
+            return answer
+
+        raise RuntimeError("简报生成失败：两次尝试均未通过校验")
 
     def _validate_numbers(self, briefing: str, input_text: str) -> bool:
         """校验简报中的数字是否存在于输入数据中。"""
+        if not briefing.strip():
+            return False
         briefing_nums = set()
         for m in re.finditer(r'(\d+\.?\d*)\s*%?', briefing):
             v = float(m.group(1))

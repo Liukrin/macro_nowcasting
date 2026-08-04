@@ -26,6 +26,11 @@ class AnalystAgent:
         不碰 engine、不调 build_inputs。
         返回 {"briefing": str, "rewritten": bool}。
         """
+        # 拒绝空原文：拿空串去重写必然产出元回复，白烧 token 还污染最终产物
+        if not (original_briefing or "").strip():
+            self.logger.warning("rewrite 收到空原文，拒绝重写，返回原文")
+            return {"briefing": original_briefing, "rewritten": False}
+
         # 短路保护：无有效 issue → 直接返回原文
         valid_issues = [i for i in (issues or []) if isinstance(i, dict)]
         if not valid_issues:

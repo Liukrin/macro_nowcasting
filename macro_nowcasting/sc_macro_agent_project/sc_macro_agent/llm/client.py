@@ -124,6 +124,7 @@ class LLMClient:
 
         # trace 落盘目录，惰性计算一次后缓存
         self._traces_dir: Optional[Path] = None
+        self._trace_write_failed = False  # 首次写入失败用 error 打印绝对路径
 
         if not self.is_mock:
             try:
@@ -264,7 +265,14 @@ class LLMClient:
             with open(traces_path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except Exception as exc:
-            self.logger.warning("Failed to write LLM trace: %s", exc)
+            if not self._trace_write_failed:
+                self._trace_write_failed = True
+                self.logger.error(
+                    "Failed to write LLM trace (首次，后续仅 warning): "
+                    "target=%s error=%s", traces_path.parent, exc,
+                )
+            else:
+                self.logger.warning("Failed to write LLM trace: %s", exc)
 
     def get_traces(self, date: Optional[str] = None, limit: int = 100) -> list[dict]:
         """按日期读回 trace 记录。date 为 None 时读当天。"""

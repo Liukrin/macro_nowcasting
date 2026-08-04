@@ -438,8 +438,6 @@ def load_engine() -> PredictionEngine:
     config = AppConfig.from_env()
     engine = PredictionEngine(config=config)
     _tick("load_engine:engine_constructed")
-    from sc_macro_agent.llm.client import LLMClient
-    LLMClient.set_artifact_dir(config.data.resolve_artifact_dir(create=False))
     light_mode = os.environ.get("SC_MACRO_LIGHT_MODE", "").lower() == "true"
     _tick("load_engine:before_run_agent")
     try:
@@ -1483,7 +1481,8 @@ def render_agent_v2(data: Dict[str, Any]) -> None:
 
             elif "analyst_agent" in name:
                 st.markdown(f"**✍️ AnalystAgent**  `{elapsed:.1f}s`")
-                st.caption(f"生成了 {len(briefing)} 字经济简报")
+                bl = meta.get("briefing_length", len(briefing))
+                st.caption(f"生成了 {bl} 字经济简报")
 
             elif "critic" in name:
                 passed = meta.get("passed", False)
@@ -2120,6 +2119,11 @@ def render_llm_traces(_data: Dict[str, Any]) -> None:
 # ================================================================
 def main() -> None:
     _tick("main:enter")
+    # trace 落盘路径必须在 main() 中设置，不能放在 @st.cache_resource 内部：
+    # 缓存命中时函数体完全跳过，set_artifact_dir 不会执行
+    from sc_macro_agent.config import AppConfig
+    from sc_macro_agent.llm.client import LLMClient
+    LLMClient.set_artifact_dir(AppConfig.from_env().data.resolve_artifact_dir(create=False))
     # 在 main() 渲染 status，不放在 @st.cache_resource 内部：
     # 冷缓存时展示初始化进度并 显式 complete；热缓存时瞬间完成，人眼不可感知
     with st.status("正在初始化引擎…", expanded=False) as _init_status:
