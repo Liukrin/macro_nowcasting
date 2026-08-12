@@ -16,7 +16,7 @@ import pandas as pd
 from ..config import ModelConfig
 from ..logging_utils import get_logger
 from ..utils import metrics_dict
-from .baselines import LastValueModel, MeanRecentModel, SeasonalNaiveModel, DriftModel
+from .baselines import LastValueModel, MeanRecentModel, SeasonalNaiveModel, DriftModel, ARIMABaselineModel
 from .midas_model import RidgeMIDASModel, ElasticMIDASModel
 from .hybrid_model import HybridResidualModel
 from ..exceptions import ModelTrainingError
@@ -51,6 +51,8 @@ class ModelFactory:
             return SeasonalNaiveModel()
         if name == "drift":
             return DriftModel()
+        if name == "arima":
+            return ARIMABaselineModel()
         if name == "ridge_midas":
             return RidgeMIDASModel(alphas=self.config.ridge_alphas)
         if name == "elastic_midas":

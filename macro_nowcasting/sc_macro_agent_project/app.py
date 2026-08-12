@@ -1327,6 +1327,43 @@ def render_backtest(data: Dict[str, Any]) -> None:
         with st.expander("查看详细窗口数据"):
             st.dataframe(window_df, use_container_width=True, hide_index=True)
 
+    # ---- 基准模型对照表 ----
+    baseline_comparison = data["backtest"].get("baseline_comparison", []) or []
+    if baseline_comparison:
+        st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+        render_section("Benchmark Comparison", "基准模型对比", "ARIMA / 朴素基准 与主模型的回测性能对照")
+        main_model_name = data["summary"].get("selected_model", "主模型")
+
+        # 构建表格行：主模型 + 各基准
+        rows = []
+        rows.append({
+            "模型": f"⭐ {main_model_name}",
+            "RMSE": fmt_number(metrics.get("rmse"), 3),
+            "MAE": fmt_number(metrics.get("mae"), 3),
+            "方向准确率": fmt_pct_decimal(metrics.get("direction_accuracy"), 1),
+            "相对改进 (RMSE)": "—",
+        })
+        for bl in baseline_comparison:
+            bl_name = bl.get("model_name", "?")
+            imp = bl.get("rmse_improvement_pct", 0.0)
+            imp_str = f"+{imp:.1f}%" if imp > 0 else (f"{imp:.1f}%" if imp < 0 else "0.0%")
+            rows.append({
+                "模型": bl_name,
+                "RMSE": fmt_number(bl.get("rmse"), 3),
+                "MAE": fmt_number(bl.get("mae"), 3),
+                "方向准确率": fmt_pct_decimal(bl.get("direction_accuracy"), 1),
+                "相对改进 (RMSE)": imp_str,
+            })
+
+        comparison_df = pd.DataFrame(rows)
+        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+        n_matched = sum(1 for bl in baseline_comparison if bl.get("n_windows") == data["backtest"].get("n_windows", -1))
+        st.caption(
+            f"相对改进 = (基准RMSE − 主模型RMSE) / 基准RMSE，正数表示主模型更优。"
+            f" 窗口数一致: {n_matched}/{len(baseline_comparison)}。"
+        )
+
 
 def render_factors(data: Dict[str, Any]) -> None:
     top_features_df = data["top_features_df"]

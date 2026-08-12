@@ -247,6 +247,40 @@ class PredictionEngine:
         )
         result["target_transform"] = self.config.features.target_transform
         self.backtest_result = result
+
+        # ---- 基准模型对比 ----
+        baseline_comparison: List[Dict[str, Any]] = []
+        main_rmse = float(result["metrics"].get("rmse", 0.0))
+
+        for baseline_name in self.config.backtest.baseline_models:
+            try:
+                bl_result = self.backtester.run(
+                    panel=panel,
+                    feature_cols=feature_cols,
+                    target_col=self.feature_artifacts.target_column,
+                    selected_model_name=baseline_name,
+                    base_series=base_series,
+                )
+                bl_rmse = float(bl_result["metrics"].get("rmse", 0.0))
+                bl_mae = float(bl_result["metrics"].get("mae", 0.0))
+                bl_dir_acc = float(bl_result["metrics"].get("direction_accuracy", 0.0))
+                bl_n = int(bl_result.get("n_windows", 0))
+                improvement = ((bl_rmse - main_rmse) / bl_rmse * 100.0) if bl_rmse > 0 else 0.0
+                baseline_comparison.append({
+                    "model_name": baseline_name,
+                    "rmse": bl_rmse,
+                    "mae": bl_mae,
+                    "direction_accuracy": bl_dir_acc,
+                    "n_windows": bl_n,
+                    "rmse_improvement_pct": improvement,
+                })
+            except Exception as exc:
+                self.logger.warning(
+                    "基准模型回测失败 | model=%s | err=%s", baseline_name, exc
+                )
+
+        result["baseline_comparison"] = baseline_comparison
+        self.backtest_result = result
         step.close("completed", result)
         return result
 

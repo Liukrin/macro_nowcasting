@@ -12,6 +12,7 @@ xlrd>=2.0
 python-dotenv>=1.0
 openai>=1.0,<3.0
 pyyaml>=6.0
+statsmodels>=0.14,<1.0
 
 # Chronos 残差修正为可选依赖，见 requirements-optional.txt
 # 云端不安装 torch，Chronos 自动降级跳过，不影响主流程

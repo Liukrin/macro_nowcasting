@@ -179,6 +179,9 @@ class BacktestConfig:
     store_predictions: bool = True
     store_feature_importance: bool = True
 
+    # 基准模型（在回测阶段与主模型并列对比，不参与模型选择）
+    baseline_models: List[str] = field(default_factory=lambda: ["arima", "seasonal_naive"])
+
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
