@@ -5,9 +5,100 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
+import logging
 import pandas as pd
 from .data_contracts import REQUIRED_LONG_COLUMNS, REQUIRED_METADATA_COLUMNS
 from ..utils import quarter_end
+
+_logger = logging.getLogger("sc_macro_agent.data_quality")
+
+
+def run_adf_tests(
+    series_dict: Dict[str, pd.Series],
+    max_series: int = 30,
+) -> List[Dict[str, Any]]:
+    """对多条序列执行 ADF 平稳性检验。
+
+    Args:
+        series_dict: {名称: 序列} 的字典
+        max_series: 最多检验的序列数，防止页面卡顿
+
+    Returns:
+        [{indicator, n_obs, adf_stat, p_value, used_lag,
+          critical_1pct, critical_5pct, is_stationary, conclusion}]
+        statsmodels 缺失时返回空列表。
+    """
+    try:
+        from statsmodels.tsa.stattools import adfuller
+    except ImportError:
+        _logger.warning("statsmodels 未安装，跳过 ADF 平稳性检验")
+        return []
+
+    results: List[Dict[str, Any]] = []
+    count = 0
+
+    for name, series in series_dict.items():
+        if count >= max_series:
+            break
+        ser = series.dropna().astype(float)
+        n_obs = len(ser)
+
+        if n_obs < 12:
+            results.append({
+                "indicator": name,
+                "n_obs": n_obs,
+                "adf_stat": None,
+                "p_value": None,
+                "used_lag": None,
+                "critical_1pct": None,
+                "critical_5pct": None,
+                "is_stationary": False,
+                "conclusion": "样本不足（需 ≥12 个观测）",
+            })
+            count += 1
+            continue
+
+        try:
+            adf_result = adfuller(ser.values, autolag="AIC")
+            adf_stat = float(adf_result[0])
+            p_value = float(adf_result[1])
+            used_lag = int(adf_result[2])
+            crit = adf_result[4]
+            crit_1 = float(crit.get("1%", float("nan")))
+            crit_5 = float(crit.get("5%", float("nan")))
+            is_stat = p_value < 0.05
+
+            if is_stat:
+                conclusion = f"平稳（p={p_value:.4f} < 0.05，拒绝单位根原假设）"
+            else:
+                conclusion = f"非平稳（p={p_value:.4f} ≥ 0.05，不能拒绝单位根原假设）"
+
+            results.append({
+                "indicator": name,
+                "n_obs": n_obs,
+                "adf_stat": adf_stat,
+                "p_value": p_value,
+                "used_lag": used_lag,
+                "critical_1pct": crit_1,
+                "critical_5pct": crit_5,
+                "is_stationary": is_stat,
+                "conclusion": conclusion,
+            })
+        except Exception as exc:
+            results.append({
+                "indicator": name,
+                "n_obs": n_obs,
+                "adf_stat": None,
+                "p_value": None,
+                "used_lag": None,
+                "critical_1pct": None,
+                "critical_5pct": None,
+                "is_stationary": False,
+                "conclusion": f"检验失败: {exc}",
+            })
+        count += 1
+
+    return results
 
 
 @dataclass

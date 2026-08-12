@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import json
 import os
 
@@ -103,6 +103,14 @@ class FeatureConfig:
     # 发布时滞
     feature_vintage: str = "full_quarter"
 
+    # MIDAS 月度滞后通道（Exponential Almon Lag）
+    build_midas_lags: bool = True
+    midas_indicator_keywords: List[str] = field(default_factory=lambda: [
+        "PMI", "用电量", "工业增加值", "固定资产投资",
+    ])
+    midas_n_lags: int = 6        # 保留最近 6 个月的滞后
+    midas_max_indicators: int = 4  # 上限，防止参数爆炸
+
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -117,6 +125,7 @@ class ModelConfig:
         "mean_recent",
         "ridge_midas",
         "elastic_midas",
+        "almon_midas",
         "hybrid_residual",
     ])
     primary_model: str = "auto"
@@ -153,6 +162,11 @@ class ModelConfig:
     use_model_blend: bool = True
     blend_weights: Optional[Dict[str, float]] = None
     confidence_level: float = 0.8
+
+    # Almon MIDAS θ 收缩
+    almon_theta_l2: float = 0.1          # θ 的 L2 惩罚系数（作用于 SSE/n）
+    almon_theta1_bounds: Tuple[float, float] = (-2.0, 2.0)
+    almon_theta2_bounds: Tuple[float, float] = (-1.5, 0.5)
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -990,13 +990,14 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
     model_name = summary.get("selected_model") or "-"
     dataset_mode = status.get("dataset_mode") or "-"
     n_rows = status.get("n_rows") or 0
-    n_features = status.get("n_features") or 0
+    n_features_active = status.get("n_features_active") or status.get("n_features") or 0
+    n_features_total = status.get("n_features_total") or status.get("n_features") or 0
     st.sidebar.markdown(
         f'<div style="font-size:0.85rem;color:{COLORS["text_primary"]};margin-bottom:0.6rem;">'
         f'<b>模型</b>&nbsp;{model_name}&ensp;|&ensp;<b>模式</b>&nbsp;{dataset_mode}'
         f'</div>'
         f'<div style="font-size:0.85rem;color:{COLORS["text_primary"]};">'
-        f'<b>样本</b>&nbsp;{n_rows} 行&ensp;·&ensp;<b>特征</b>&nbsp;{n_features} 维'
+        f'<b>样本</b>&nbsp;{n_rows} 行&ensp;·&ensp;<b>特征</b>&nbsp;{n_features_active}/{n_features_total} 维'
         f'</div>',
         unsafe_allow_html=True)
 
@@ -1018,7 +1019,17 @@ def sidebar_controls(data: Dict[str, Any]) -> Tuple[str, bool]:
             unsafe_allow_html=True)
         st.sidebar.caption(f"90% CI [{fmt_number(ci.get('lower'))}, {fmt_number(ci.get('upper'))}] | {prediction.get('target_transform','?')}")
         cs = prediction.get("chronos_state", "?")
-        st.sidebar.caption(f"Chronos: {cs} | 修正: {prediction.get('chronos_correction',0):.2f}")
+        if cs == "ready":
+            chronos_label = f"TSLM 残差修正：{prediction.get('chronos_correction',0):+.3f}"
+        elif cs == "failed":
+            reason = prediction.get("chronos_failure_reason", "")
+            if "未安装" in str(reason) or "依赖" in str(reason):
+                chronos_label = "TSLM 残差修正：部署环境未启用（无 torch）"
+            else:
+                chronos_label = f"TSLM 残差修正：{reason}"
+        else:
+            chronos_label = "TSLM 残差修正：未加载"
+        st.sidebar.caption(chronos_label)
 
     st.sidebar.markdown(
         f'<div style="height: 1px; background: linear-gradient(90deg, transparent, {COLORS["border"]}, transparent); margin: 1.5rem 0;"></div>',
@@ -1081,8 +1092,11 @@ def render_overview(data: Dict[str, Any]) -> None:
         render_warning_pills(warnings)
         st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     ci = prediction.get("confidence_interval", {}) or {}
+    status = data["status"]
+    n_active = status.get("n_features_active", status.get("n_features", 0))
+    n_total = status.get("n_features_total", status.get("n_features", 0))
 
     with c1:
         st.markdown(
@@ -1102,7 +1116,7 @@ def render_overview(data: Dict[str, Any]) -> None:
             <div class="kpi-card accent-purple">
                 <div class="label">模型配置</div>
                 <div class="value" style="font-size: 1.8rem;">{summary.get('selected_model') or '-'}</div>
-                <div class="meta">训练样本：{summary.get('n_rows') or 0} 行<br>特征数量：{summary.get('n_features') or 0} 维</div>
+                <div class="meta">训练样本：{summary.get('n_rows') or 0} 行<br>特征：{n_active} 维（使用） / {n_total} 维（面板）</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1111,14 +1125,26 @@ def render_overview(data: Dict[str, Any]) -> None:
     with c3:
         rmse = metrics.get('rmse')
         r2 = metrics.get('r2')
+        st.markdown(
+            f"""
+            <div class="kpi-card accent-green">
+                <div class="label">回测性能 · 扩展窗口 · level 空间</div>
+                <div class="value" style="font-size: 1.8rem;">RMSE {fmt_number(rmse, 3) if rmse else '-'}</div>
+                <div class="meta">R² = {fmt_number(r2, 3) if r2 else '-'} | 32 窗口 | level 口径</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c4:
         dir_acc = metrics.get('direction_accuracy')
         dir_acc_text = f"{dir_acc:.1%}" if dir_acc is not None else '-'
         st.markdown(
             f"""
-            <div class="kpi-card accent-green">
-                <div class="label">回测性能（32窗口·含疫情期）</div>
-                <div class="value" style="font-size: 1.8rem;">RMSE {fmt_number(rmse, 3) if rmse else '-'}</div>
-                <div class="meta">R² = {fmt_number(r2, 3) if r2 else '-'} | 方向准确率 {dir_acc_text}</div>
+            <div class="kpi-card accent-left" style="border-left: 3px solid {COLORS['accent_amber']};">
+                <div class="label">方向准确率 · level 回测</div>
+                <div class="value">{dir_acc_text}</div>
+                <div class="meta">预测变化方向与实际一致的比例<br>n = {metrics.get('direction_pairs', 31)} 个方向对</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1143,12 +1169,12 @@ def render_overview(data: Dict[str, Any]) -> None:
 
     b1, b2 = st.columns([1, 1], gap="large")
     with b1:
-        render_section("Model Selection", "候选模型对比", "基于验证集（近12季·差分口径）的模型自动选择")
+        render_section("Model Selection", "候选模型对比", "验证集 · delta 空间 · 单次尾部切分（最近 12 季度）")
         fig = create_leaderboard_chart(leaderboard_df)
         if fig is not None:
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         if not leaderboard_df.empty:
-            st.caption("此处 RMSE 为验证集差分口径，与上方 32 窗口回测（level 口径，含 2020 年断点）不可直接比较。")
+            st.caption("⚠ 此处 RMSE 为验证集 · delta 空间（Δy_t = y_t − y_{t-1}），与上方 KPI 的回测 · level 空间 RMSE 不可直接比较。leaderboard 仅用于模型选择排序，不反映 level 预测精度。")
             with st.expander("查看详细指标"):
                 st.caption("MAPE 在目标值接近零时会失真（2020 年前后 GDP 累计同比曾降至 -3% 附近），本项目以 RMSE 与方向准确率为主要评价指标。")
                 st.dataframe(leaderboard_df, use_container_width=True, hide_index=True)
@@ -1236,25 +1262,61 @@ def render_nowcast(data: Dict[str, Any]) -> None:
         "<div style='height: 1px; background: linear-gradient(90deg, transparent, #2a2e37, transparent); margin: 2rem 0;'></div>",
         unsafe_allow_html=True)
 
-    # Chronos 残差修正状态（默认开启，不改变其行为，仅做状态展示）
+    # Chronos / TSLM 残差修正状态
     chronos_state = prediction.get("chronos_state", "unknown")
     try:
         chronos_correction = float(prediction.get("chronos_correction", 0.0))
     except (TypeError, ValueError):
         chronos_correction = 0.0
+
     if chronos_state == "ready":
-        chronos_text = f"Chronos 残差修正：已启用，修正量 {chronos_correction:+.3f} 个百分点"
+        chronos_text = f"TSLM 残差修正：已启用，修正量 {chronos_correction:+.3f} 个百分点"
         chronos_color = COLORS["accent_cyan"]
     elif chronos_state == "failed":
-        reason = prediction.get("chronos_failure_reason") or "未知原因"
-        chronos_text = f"Chronos 残差修正：{reason}，已跳过（不影响主预测）"
+        reason = str(prediction.get("chronos_failure_reason", ""))
+        if "未安装" in reason or "依赖" in reason:
+            chronos_text = "TSLM 残差修正：当前部署环境未启用（无 torch）"
+        else:
+            chronos_text = f"TSLM 残差修正：{reason}，已跳过"
         chronos_color = COLORS["accent_amber"]
     else:
-        chronos_text = "Chronos 残差修正：未加载"
+        chronos_text = "TSLM 残差修正：未加载"
         chronos_color = COLORS["text_muted"]
     st.markdown(
         f'<div style="padding:0.5rem 1rem; background:{COLORS["bg_tertiary"]}; border-radius:8px; font-size:0.85rem; color:{chronos_color};">{chronos_text}</div>',
         unsafe_allow_html=True)
+
+    # 若本地不可用，尝试展示静态参考结果
+    if chronos_state == "failed":
+        _ref_path = Path(__file__).parent / "assets" / "chronos_reference.json"
+        if _ref_path.exists():
+            try:
+                _ref = json.loads(_ref_path.read_text(encoding="utf-8"))
+                with st.expander("📄 查看 TSLM 本地参考结果（静态，非本次运行产生）", expanded=False):
+                    st.caption(
+                        f"⚠ 以下为预先计算的静态结果，非本次运行产生。"
+                        f" 生成时间：{_ref.get('generated_at','?')[:19]}，"
+                        f" 数据截止：{_ref.get('data_vintage','?')}。"
+                        f" 部署环境未安装 torch，无法实时运行 TSLM 残差修正。"
+                    )
+                    ref_rows = []
+                    for mname, r in (_ref.get("results") or {}).items():
+                        ref_rows.append({
+                            "模型": mname,
+                            "RMSE": f'{r[\"rmse\"]:.4f}',
+                            "MAE": f'{r[\"mae\"]:.4f}',
+                            "R²": f'{r[\"r2\"]:+.4f}',
+                            "方向准确率": f'{r[\"direction_accuracy\"]:.1%}',
+                            "窗口数": r["n_windows"],
+                        })
+                    if ref_rows:
+                        st.dataframe(pd.DataFrame(ref_rows), use_container_width=True, hide_index=True)
+                        st.caption(
+                            "Chronos (amazon/chronos-bolt-tiny) 残差修正在本地 32 窗口回测中"
+                            " 未优于纯线性 ridge_midas，因此线上主预测不依赖 TSLM 修正。"
+                        )
+            except Exception:
+                pass
 
     left, right = st.columns([1.2, 0.8], gap="large")
     with left:
@@ -1286,14 +1348,14 @@ def render_backtest(data: Dict[str, Any]) -> None:
     metrics = data["backtest"].get("metrics", {}) or {}
     window_df = data["window_df"]
 
-    render_section("Backtest", "历史回测分析", "滚动窗口交叉验证与误差分布")
+    render_section("Backtest", "历史回测分析", "扩展窗口交叉验证 · level 空间 · 32 窗口")
 
     cols = st.columns(4)
     metric_items = [
-        ("MAE", fmt_number(metrics.get("mae"), 3), COLORS["text_primary"]),
-        ("RMSE", fmt_number(metrics.get("rmse"), 3), COLORS["accent_cyan"]),
-        ("MAPE", fmt_pct_decimal(metrics.get("mape"), 2), COLORS["accent_amber"]),
-        ("R²", fmt_number(metrics.get("r2"), 3), COLORS["accent_green"]),
+        ("MAE · level", fmt_number(metrics.get("mae"), 3), COLORS["text_primary"]),
+        ("RMSE · level", fmt_number(metrics.get("rmse"), 3), COLORS["accent_cyan"]),
+        ("MAPE · level", fmt_pct_decimal(metrics.get("mape"), 2), COLORS["accent_amber"]),
+        ("R² · level", fmt_number(metrics.get("r2"), 3), COLORS["accent_green"]),
     ]
     for col, (name, val, color) in zip(cols, metric_items):
         col.markdown(
@@ -1364,6 +1426,95 @@ def render_backtest(data: Dict[str, Any]) -> None:
             f" 窗口数一致: {n_matched}/{len(baseline_comparison)}。"
         )
 
+    # ---- 方向准确率对比 ----
+    from sc_macro_agent.models.backtesting import ExpandingWindowBacktester
+
+    try:
+        engine = load_engine()
+        if engine.feature_artifacts is not None:
+            panel = engine.feature_artifacts.training_panel.copy()
+            panel_t, base_series = engine._apply_target_transform(panel)
+            feat_cols = engine.feature_artifacts.feature_columns
+            target_col = engine.feature_artifacts.target_column
+
+            bt_cfg = engine.config.backtest
+            mdl_cfg = engine.config.model
+            backtester = ExpandingWindowBacktester(bt_cfg, mdl_cfg)
+
+            dir_acc_rows = []
+            all_names = list(mdl_cfg.candidate_models) + list(bt_cfg.baseline_models)
+            seen = set()
+            for mname in all_names:
+                if mname in seen:
+                    continue
+                seen.add(mname)
+                try:
+                    bt_r = backtester.run(
+                        panel=panel_t, feature_cols=feat_cols, target_col=target_col,
+                        selected_model_name=mname, base_series=base_series,
+                    )
+                    da = bt_r["metrics"].get("direction_accuracy", 0.0)
+                    dp = bt_r["metrics"].get("direction_pairs", 0)
+                    dir_acc_rows.append({
+                        "模型": mname,
+                        "方向准确率": da,
+                        "方向对数": dp,
+                        "is_main": mname == (summary.get("selected_model") or ""),
+                    })
+                except Exception:
+                    pass
+
+            if dir_acc_rows:
+                st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+                render_section(
+                    "Direction Accuracy",
+                    "方向准确率对比",
+                    "预测的同比增速变化方向（相对上期上升/下降）与实际一致的比例",
+                )
+                # Build bars
+                dir_acc_rows.sort(key=lambda x: x["方向准确率"], reverse=True)
+                labels = [r["模型"] for r in dir_acc_rows]
+                values = [r["方向准确率"] for r in dir_acc_rows]
+                bar_colors = []
+                for r in dir_acc_rows:
+                    if r["is_main"]:
+                        bar_colors.append(COLORS["accent_cyan"])
+                    elif r["模型"] == "almon_midas":
+                        bar_colors.append(COLORS["accent_purple"])
+                    else:
+                        bar_colors.append(COLORS["border_hover"])
+
+                fig_dir = go.Figure()
+                fig_dir.add_trace(go.Bar(
+                    x=values,
+                    y=labels,
+                    orientation="h",
+                    marker_color=bar_colors,
+                    text=[f"{v:.1%}" for v in values],
+                    textposition="outside",
+                    textfont=dict(color=COLORS["text_primary"], size=11),
+                    hovertemplate="<b>%{y}</b><br>方向准确率: %{x:.1%}<extra></extra>",
+                ))
+                fig_dir = apply_base_style(fig_dir)
+                fig_dir.update_layout(
+                    height=320,
+                    margin=dict(l=150, r=40, t=10, b=10),
+                    xaxis=dict(title="<b>方向准确率</b>", tickformat=".0%", range=[0, 1.0]),
+                    yaxis=dict(title=""),
+                    showlegend=False,
+                    bargap=0.4,
+                )
+                st.plotly_chart(fig_dir, use_container_width=True, config={"displayModeBar": False})
+                n_pairs = dir_acc_rows[0]["方向对数"] if dir_acc_rows else 31
+                st.caption(
+                    f"方向准确率 = 预测的 Δ 符号（正/负）与实际 Δ 符号一致的比例，"
+                    f"n = {n_pairs} 个方向对。"
+                    f" 青色 = 主模型（{summary.get('selected_model', '?')}），"
+                    f"紫色 = almon_midas。"
+                )
+    except Exception:
+        pass  # 取不到数据时整块跳过
+
 
 def render_factors(data: Dict[str, Any]) -> None:
     top_features_df = data["top_features_df"]
@@ -1390,6 +1541,127 @@ def render_factors(data: Dict[str, Any]) -> None:
     else:
         st.info("当前没有特征重要性结果。运行模型训练后刷新。")
 
+    # ---- MIDAS 权重曲线 ----
+    leaderboard = summary.get("leaderboard", []) or []
+    has_almon = any(
+        (isinstance(e, dict) and e.get("model_name") == "almon_midas") or e == "almon_midas"
+        for e in leaderboard
+    )
+    # Also check if selected model is almon_midas
+    selected_model = summary.get("selected_model", "")
+    almon_available = has_almon or selected_model == "almon_midas"
+
+    if almon_available:
+        try:
+            engine = load_engine()
+            if engine.feature_artifacts is not None and engine.selected_model is not None:
+                from sc_macro_agent.models.almon_midas import AlmonMIDASModel
+
+                # 获取当前训练面板和特征
+                panel = engine.feature_artifacts.training_panel.copy()
+                feature_cols = engine.feature_artifacts.feature_columns
+                target_col = engine.feature_artifacts.target_column
+
+                # 使用与 train() 一致的目标变换
+                panel, _ = engine._apply_target_transform(panel)
+
+                X_train = panel[feature_cols]
+                y_train = panel[target_col]
+
+                almon = AlmonMIDASModel(
+                    theta_l2=engine.config.model.almon_theta_l2,
+                    theta1_bounds=engine.config.model.almon_theta1_bounds,
+                    theta2_bounds=engine.config.model.almon_theta2_bounds,
+                )
+                try:
+                    almon.fit(X_train, y_train)
+                    curves = almon.get_weight_curves()
+                    if curves:
+                        st.markdown("<div style='height: 2rem;'></div>", unsafe_allow_html=True)
+                        render_section(
+                            "MIDAS Almon Weights",
+                            "MIDAS 权重曲线",
+                            "Exponential Almon Lag 权重函数：B(k;θ) = exp(θ1·k + θ2·k²) / Σ exp(θ1·j + θ2·j²)，对应申报书公式 (2)",
+                        )
+
+                        # Check if any indicator has boundary issues
+                        any_boundary = any(c.get("at_boundary", False) for c in curves)
+
+                        fig = go.Figure()
+                        colors = ["#22d3ee", "#a78bfa", "#34d399", "#fbbf24", "#f87171", "#60a5fa"]
+                        for i, curve in enumerate(curves):
+                            indicator = curve.get("indicator", "?")
+                            weights = curve.get("weights", [])
+                            theta1 = curve.get("theta1", 0.0)
+                            theta2 = curve.get("theta2", 0.0)
+                            beta = curve.get("beta", 0.0)
+                            at_bound = curve.get("at_boundary", False)
+                            ent = curve.get("weight_entropy", None)
+                            if not weights:
+                                continue
+                            k_vals = list(range(len(weights)))
+
+                            # Label: add ⚠ if at boundary
+                            label = indicator[:36]
+                            if at_bound:
+                                label += " ⚠"
+
+                            fig.add_trace(go.Scatter(
+                                x=k_vals,
+                                y=weights,
+                                mode="lines+markers",
+                                name=label,
+                                line=dict(
+                                    width=2.5,
+                                    color=colors[i % len(colors)],
+                                    dash="dash" if at_bound else "solid",
+                                ),
+                                marker=dict(size=6),
+                                hovertemplate=(
+                                    f"<b>{indicator}</b><br>"
+                                    f"Lag %{{x}}: 权重 %{{y:.4f}}<br>"
+                                    f"θ1={theta1:.3f}, θ2={theta2:.3f}, β={beta:.3f}"
+                                    + (", 参数触界" if at_bound else "")
+                                    + (f", ent={ent:.3f}" if ent is not None else "")
+                                    + "<extra></extra>"
+                                ),
+                            ))
+
+                        fig = apply_base_style(fig)
+                        fig.update_layout(
+                            height=380,
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            xaxis=dict(
+                                title="<b>滞后阶 k</b>（0 = 当季最新月）",
+                                tickmode="linear",
+                                dtick=1,
+                            ),
+                            yaxis=dict(title="<b>权重</b>", range=[0, 1.05]),
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                x=0.5,
+                                xanchor="center",
+                                font=dict(size=10),
+                            ),
+                            hovermode="x unified",
+                        )
+                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                        st.caption(
+                            "每条曲线的权重和为 1。衰减速度由 θ1、θ2 决定，"
+                            "对应申报书公式 (2) B(k;θ) = exp(θ1·k + θ2·k²) / Σ_j exp(θ1·j + θ2·j²)。"
+                        )
+                        if any_boundary:
+                            st.warning(
+                                "⚠ 部分指标参数触界——该指标的滞后结构在当前数据下未能稳定识别，"
+                                "权重结果仅供参考。虚线 = 参数在可行域边界上。"
+                            )
+                except Exception:
+                    pass  # 取不到数据时整块跳过，不报错
+        except Exception:
+            pass  # 取不到数据时整块跳过，不报错
+
 
 def render_data_quality(data: Dict[str, Any]) -> None:
     items_df = data["items_df"]
@@ -1410,7 +1682,7 @@ def render_data_quality(data: Dict[str, Any]) -> None:
     with right:
         st.dataframe(mapping_df(signal_overview), use_container_width=True, hide_index=True)
 
-    tab1, tab2, tab3 = st.tabs(["📋 可用性明细", "🔍 质量检查", "📊 审计摘要"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 可用性明细", "🔍 质量检查", "📊 审计摘要", "📈 平稳性检验 (ADF)"])
     with tab1:
         if not items_df.empty:
             st.dataframe(items_df, use_container_width=True, hide_index=True)
@@ -1426,6 +1698,55 @@ def render_data_quality(data: Dict[str, Any]) -> None:
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
         else:
             st.caption("当前没有审计摘要表。")
+    with tab4:
+        adf_tests = data["audit"].get("adf_tests", []) or []
+        if adf_tests:
+            # Build styled display
+            adf_rows = []
+            for item in adf_tests:
+                stat_val = f'{item["adf_stat"]:.4f}' if item["adf_stat"] is not None else "-"
+                p_val = f'{item["p_value"]:.4f}' if item["p_value"] is not None else "-"
+                is_target = "目标变量" in item.get("indicator", "")
+                adf_rows.append({
+                    "指标": item["indicator"],
+                    "n": item["n_obs"],
+                    "ADF 统计量": stat_val,
+                    "p 值": p_val,
+                    "滞后阶": item.get("used_lag", "-") if item.get("used_lag") is not None else "-",
+                    "1% 临界值": f'{item["critical_1pct"]:.4f}' if item.get("critical_1pct") is not None else "-",
+                    "5% 临界值": f'{item["critical_5pct"]:.4f}' if item.get("critical_5pct") is not None else "-",
+                    "结论": item["conclusion"],
+                    "_is_stat": item.get("is_stationary", False),
+                    "_is_target": is_target,
+                })
+            adf_df = pd.DataFrame(adf_rows)
+
+            # Color-code: stationary=green, non-stationary=amber, target rows highlighted
+            def _adf_style(row):
+                styles = []
+                for col in adf_df.columns:
+                    if col.startswith("_"):
+                        continue
+                    if row.get("_is_target"):
+                        styles.append("background-color: rgba(34,211,238,0.08); font-weight: 600")
+                    elif row.get("_is_stat"):
+                        styles.append("color: #34d399")
+                    else:
+                        styles.append("color: #fbbf24")
+                return styles
+
+            display_cols = [c for c in adf_df.columns if not c.startswith("_")]
+            styled = adf_df[display_cols].style.apply(_adf_style, axis=1)
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+            st.caption(
+                "原假设 H₀：序列存在单位根（非平稳）。"
+                " p < 0.05 拒绝原假设，判定为平稳。"
+                " 滞后阶由 AIC 自动选择。"
+                " 青色高亮行 = 目标变量，绿色 = 平稳，琥珀色 = 非平稳。"
+            )
+        else:
+            st.info("暂无 ADF 平稳性检验结果。运行数据审计后刷新。")
 
 
 def render_agent(data: Dict[str, Any]) -> None:

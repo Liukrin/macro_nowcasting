@@ -20,11 +20,12 @@ import pandas as pd
 from .agent import ForecastAgent
 from .config import AppConfig
 from .data.data_manager import DataManager, DataBundle
-from .data.data_quality import DataQualityAuditor
+from .data.data_quality import DataQualityAuditor, run_adf_tests
 from .features.feature_engineering import FeatureEngineer
 from .logging_utils import get_logger
 from .models.model_selection import ModelSelector
 from .models.backtesting import ExpandingWindowBacktester
+from .models.base import select_model_features
 from .models.dfm_model import DFMModel
 from .api.reporting import ReportBuilder
 from .utils import metrics_dict, pretty_quarter, save_json, save_text
@@ -87,6 +88,46 @@ class PredictionEngine:
         )
         self.audit_result = result
 
+        # ADF 平稳性检验
+        adf_series: Dict[str, pd.Series] = {}
+
+        # 目标变量 level 和 delta
+        target_df = self.bundle.quarterly_target
+        target_filtered = target_df[
+            target_df["indicator_name"].astype(str).str.contains("GDP", na=False)
+        ]
+        if not target_filtered.empty:
+            target_ser = target_filtered.set_index("date")["indicator_value"].sort_index()
+            target_ser = pd.to_numeric(target_ser, errors="coerce").dropna()
+            if len(target_ser) >= 12:
+                adf_series["目标变量 · level"] = target_ser
+                delta_ser = target_ser.diff().dropna()
+                if len(delta_ser) >= 12:
+                    adf_series["目标变量 · delta (Δy_t)"] = delta_ser
+
+        # 核心月度指标（按 midas 关键词匹配，取最新可用值）
+        midas_kw = self.config.features.midas_indicator_keywords
+        for monthly_df, label in [
+            (self.bundle.monthly_local, "本地"),
+            (self.bundle.monthly_national, "全国"),
+        ]:
+            if monthly_df.empty:
+                continue
+            all_inds = monthly_df["indicator_name"].unique().tolist()
+            matched = [ind for ind in all_inds
+                       if any(kw in str(ind) for kw in midas_kw)]
+            for ind in matched[:4]:
+                sub = monthly_df[monthly_df["indicator_name"] == ind]
+                ser = sub.set_index("date")["indicator_value"].sort_index()
+                ser = pd.to_numeric(ser, errors="coerce").dropna()
+                if len(ser) >= 12:
+                    adf_series[f"{label} · {ind}"] = ser
+
+        try:
+            result["adf_tests"] = run_adf_tests(adf_series, max_series=30)
+        except Exception:
+            result["adf_tests"] = []
+
         artifacts: Dict[str, str] = {}
         if save_artifacts:
             out_dir = self.config.data.resolve_artifact_dir() / "audit"
@@ -145,6 +186,10 @@ class PredictionEngine:
 
         统一 train() 与 backtest() 的目标变换，避免两者目标空间不一致。
 
+        约束：返回的 base_series 与 panel 共享同一索引。
+        调用方不得在返回后对 panel 执行 reset_index，
+        否则 base_series.reindex(panel.index) 将按标签错误匹配。
+
         Returns:
             (panel, base_series)：
             - delta 变换：target_value 变为 Δy_t = y_t - y_{t-1}，丢弃无差分的第一行；
@@ -161,6 +206,10 @@ class PredictionEngine:
             panel = panel.iloc[1:].copy()
             panel[target_col] = delta_y.values
             base_series.index = panel.index
+            # 护栏：确保索引一致（函数内部 reset_index 后是安全的，此处防御
+            # 未来可能的中间操作破坏对齐）
+            assert panel.index.equals(base_series.index), \
+                "_apply_target_transform: panel 与 base_series 索引不一致"
             return panel, base_series
         return panel, None
 
@@ -208,7 +257,7 @@ class PredictionEngine:
         self.selected_model_name = model.model_name
         self.leaderboard = leaderboard
 
-        pred = model.predict(X_valid)
+        pred = model.predict(select_model_features(model, X_valid))
         metrics = metrics_dict(y_valid.tolist(), pred.tolist() if hasattr(pred, "tolist") else list(pred))
         payload = {
             "status": "trained",
@@ -300,7 +349,8 @@ class PredictionEngine:
         nowcast_quarter = pd.to_datetime(latest_row["quarter_end"].iloc[0])
 
         # Raw model prediction (delta space if target_transform='delta')
-        raw_pred = float(self.selected_model.predict(latest_row[feature_cols])[0])
+        latest_X = select_model_features(self.selected_model, latest_row[feature_cols])
+        raw_pred = float(self.selected_model.predict(latest_X)[0])
 
         # Delta add-back: y_hat = y_{t-1} + delta_hat
         # 训练面板中 X_t 与 y_t 同属第 t 季度（nowcast 映射，无 h=1 错位），
@@ -371,7 +421,7 @@ class PredictionEngine:
             "notes": notes,
         }
         if hasattr(self.selected_model, "predict_components"):
-            comp = self.selected_model.predict_components(latest_row[feature_cols])
+            comp = self.selected_model.predict_components(latest_X)
             result["components"] = {
                 "linear_prediction": float(comp["linear_prediction"][0]),
                 "nonlinear_correction": float(comp["nonlinear_correction"][0]),
@@ -406,6 +456,14 @@ class PredictionEngine:
         return self.dfm_model.summary()
 
     def get_status(self) -> Dict[str, Any]:
+        n_features_total = int(len(self.feature_artifacts.feature_columns)) if self.feature_artifacts else 0
+        n_features_midas = int(sum(1 for c in self.feature_artifacts.feature_columns if c.startswith("midas__"))) if self.feature_artifacts else 0
+        # Active features for the currently selected model
+        if self.selected_model is not None and self.feature_artifacts is not None:
+            uses_midas = getattr(self.selected_model, "uses_midas_lags", False)
+            n_features_active = n_features_total if uses_midas else n_features_total - n_features_midas
+        else:
+            n_features_active = n_features_total
         return {
             "status": "ready" if self.initialized else "not_ready",
             "initialized": self.initialized,
@@ -414,7 +472,10 @@ class PredictionEngine:
             "warnings": self.warnings,
             "selected_model": self.selected_model_name,
             "n_rows": int(len(self.feature_artifacts.training_panel)) if self.feature_artifacts else 0,
-            "n_features": int(len(self.feature_artifacts.feature_columns)) if self.feature_artifacts else 0,
+            "n_features": n_features_total,                       # 保留，兼容旧调用方
+            "n_features_total": n_features_total,                 # 面板总列数
+            "n_features_midas": n_features_midas,                 # midas 列数
+            "n_features_active": n_features_active,               # 当前主模型实际使用的列数
         }
 
     def export_artifacts(self) -> Dict[str, str]:

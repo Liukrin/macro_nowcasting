@@ -46,6 +46,21 @@ def select_features_by_policy(
     protected = {"quarter_end", "target_value"}
     all_cols = [c for c in panel.columns if c not in protected and pd.api.types.is_numeric_dtype(panel[c])]
 
+    # ---- MIDAS 列整组保留（不通过白名单机制筛选）----
+    midas_cols = [c for c in all_cols if c.startswith("midas__")]
+    # 按组前缀聚合（去掉 __L{k} 后缀即为组）
+    midas_groups: Dict[str, List[str]] = {}
+    for c in midas_cols:
+        # midas__{region}__{indicator}__L{k}
+        group_key = c.rsplit("__L", 1)[0]
+        midas_groups.setdefault(group_key, []).append(c)
+    # 将所有 midas 列加入预选（后续 cap 时整组保留或丢弃）
+    preselected_midas: List[str] = []
+    for group_key, cols in midas_groups.items():
+        preselected_midas.extend(cols)
+    # 从 all_cols 中移除 midas 列，避免后续逻辑再处理
+    all_cols = [c for c in all_cols if not c.startswith("midas__")]
+
     # 1. 用 metadata 判断每个基础指标的属性
     is_cum: Dict[str, bool] = {}
     if metadata_df is not None and not metadata_df.empty:
@@ -163,24 +178,35 @@ def select_features_by_policy(
         if _is_target_lag(col) and col not in selected:
             selected.append(col)
 
-    # 3. Remove duplicates, cap at max
+    # 3. Add preselected MIDAS columns (always included, separate budget)
     selected = list(dict.fromkeys(selected))
+    midas_to_include: List[str] = []
+    for _group_key, cols in midas_groups.items():
+        midas_to_include.extend(cols)
+    # Cap only the non-MIDAS features
     if len(selected) > config.policy_max_features:
-        # Priority: target_lags > Sichuan local > PMI > other national
         target_lag_cols = [c for c in selected if _is_target_lag(c)]
         sichuan = [c for c in selected if _region(c) == "四川省"]
         pmi = [c for c in selected if "PMI" in c and c not in target_lag_cols and c not in sichuan]
         national = [c for c in selected if _region(c) == "全国" and c not in pmi and c not in target_lag_cols and c not in sichuan]
         other = [c for c in selected if c not in target_lag_cols and c not in sichuan and c not in pmi and c not in national]
-        selected = (target_lag_cols + sichuan + pmi + national + other)[: config.policy_max_features]
+        budget = config.policy_max_features
+        result: List[str] = []
+        result.extend(target_lag_cols[:budget - len(result)])
+        result.extend(sichuan[:budget - len(result)])
+        result.extend(pmi[:budget - len(result)])
+        result.extend(national[:budget - len(result)])
+        result.extend(other[:budget - len(result)])
+        selected = result
+    all_selected = selected + midas_to_include
 
     # 4. Report missing Sichuan indicators
-    found_sc = [c for c in selected if "四川省" in c]
+    found_sc = [c for c in all_selected if "四川省" in c]
     for kw in ["规模以上工业增加值", "固定资产投资", "社会消费品零售总额", "房地产开发投资"]:
         if not any(kw in c for c in found_sc):
             print(f"  [WARNING] Sichuan indicator '{kw}' not found in panel")
 
-    return selected
+    return all_selected
 
 
 @dataclass
@@ -367,6 +393,116 @@ class FeatureEngineer:
         agg = agg.groupby("quarter_end", as_index=False).first()
         return agg.sort_values("quarter_end").reset_index(drop=True)
 
+    def _build_midas_lag_panel(
+        self,
+        monthly_df: pd.DataFrame,
+        source_table_name: str,
+        registry: FeatureRegistry,
+        metadata_df: Optional[pd.DataFrame] = None,
+    ) -> Tuple[pd.DataFrame, List[str]]:
+        """从月度长表构建 MIDAS 滞后面板。
+
+        对每个 (region, indicator) 按季度生成 midas_n_lags 个滞后列，保留原始
+        月度值而非聚合，供 AlmonMIDASModel 使用。
+
+        Returns:
+            (midas_panel, notes) — midas_panel 以 quarter_end 为索引，
+            每列名为 midas__{region}__{indicator}__L{k}
+        """
+        notes: List[str] = []
+        if monthly_df.empty or not self.config.build_midas_lags:
+            return pd.DataFrame(), notes
+
+        df = self._sort_long(monthly_df)
+        df["quarter_end"] = quarter_end(df["date"])
+        df["month_rank_in_quarter"] = df.groupby(
+            ["region", "indicator_name", "quarter_end"]
+        ).cumcount(ascending=False)  # 0 = 最新月
+
+        # 子串匹配挑选指标
+        all_indicators = df["indicator_name"].unique().tolist()
+        matched: List[str] = []
+        for ind in all_indicators:
+            ind_str = str(ind)
+            for kw in self.config.midas_indicator_keywords:
+                if kw in ind_str:
+                    matched.append(ind_str)
+                    break
+        if not matched:
+            notes.append("midas_no_matched_indicators")
+            return pd.DataFrame(), notes
+
+        # 上限
+        if len(matched) > self.config.midas_max_indicators:
+            matched = matched[: self.config.midas_max_indicators]
+            notes.append(f"midas_capped_to_{self.config.midas_max_indicators}")
+
+        df_matched = df[df["indicator_name"].isin(matched)].copy()
+
+        # 对每个 (region, indicator) 按时间排序，为每个季度生成滞后列
+        # L0 = 该季度最后一个月, L1 = 倒数第二月, ..., L5 = 上上季度第一个月
+        rows: List[Dict[str, Any]] = []
+        for (region, indicator), grp in df_matched.groupby(
+            ["region", "indicator_name"]
+        ):
+            region = str(region)
+            indicator = str(indicator)
+            grp = grp.sort_values("date").reset_index(drop=True)
+            # 构建日期→值的查找表
+            dates = grp["date"].tolist()
+            values = grp["indicator_value"].tolist()
+            # 为每个季度生成一行
+            quarters_seen: set = set()
+            for idx in range(len(dates)):
+                # Normalize to quarter start (midnight) to match _pivot_quarterly_target
+                q_end = pd.Timestamp(dates[idx]).to_period("Q").to_timestamp("Q")
+                if q_end in quarters_seen:
+                    continue
+                quarters_seen.add(q_end)
+                row: Dict[str, Any] = {"quarter_end": q_end}
+                # 从当前日期位置往回走 midas_n_lags 步
+                for k in range(self.config.midas_n_lags):
+                    col_name = f"midas__{region}__{indicator}__L{k}"
+                    src_idx = idx - k
+                    if src_idx >= 0 and dates[src_idx] <= q_end:
+                        row[col_name] = float(values[src_idx])
+                    else:
+                        row[col_name] = np.nan
+                rows.append(row)
+
+        if not rows:
+            notes.append("midas_empty_after_pivot")
+            return pd.DataFrame(), notes
+
+        midas_panel = pd.DataFrame(rows)
+        midas_panel = midas_panel.groupby("quarter_end", as_index=False).first()
+        midas_panel = midas_panel.sort_values("quarter_end").reset_index(drop=True)
+
+        # 注册特征
+        for col in midas_panel.columns:
+            if col == "quarter_end":
+                continue
+            # 解析 midas__{region}__{indicator}__L{k}
+            parts = col.split("__", 3)
+            if len(parts) >= 4 and parts[0] == "midas":
+                region = parts[1]
+                indicator = parts[2]
+                family = self._infer_family(indicator, metadata_df)
+                registry.register(
+                    name=col,
+                    source_table=source_table_name,
+                    source_indicator=indicator,
+                    region=region,
+                    family=family,
+                    transform="midas_lag",
+                    frequency="monthly",
+                    note=f"月度滞后 L{parts[3][1:] if parts[3].startswith('L') else parts[3]}",
+                )
+
+        notes.append(f"midas_lags_built: {len(matched)} indicators, "
+                     f"{len([c for c in midas_panel.columns if c != 'quarter_end'])} columns")
+        return midas_panel, notes
+
     def _merge_frames_on_quarter(self, frames: List[pd.DataFrame]) -> pd.DataFrame:
         valid = [f.copy() for f in frames if f is not None and not f.empty]
         if not valid:
@@ -403,6 +539,7 @@ class FeatureEngineer:
             c for c in out.columns
             if c not in {"quarter_end", "target_value"} and pd.api.types.is_numeric_dtype(out[c])
             and not c.startswith("target_lag_")  # 禁止对已滞后列再次施加 lag
+            and not c.startswith("midas__")      # 不衍生 midas 滞后特征
         ]
         lagged_columns = {}
         for col in base_features:
@@ -439,7 +576,10 @@ class FeatureEngineer:
         # 选出每个 family 里最核心的前 N 个原始特征，做均值和波动聚合
         for family, sub in feature_frame.groupby("family"):
             family = str(family)
-            candidates = [name for name in sub["name"].tolist() if name in out.columns]
+            candidates = [
+                name for name in sub["name"].tolist()
+                if name in out.columns and not name.startswith("midas__")
+            ]
             if not candidates:
                 continue
             candidates = candidates[: self.config.family_top_n]
@@ -458,6 +598,7 @@ class FeatureEngineer:
         numeric_cols = [
             c for c in out.select_dtypes(include=[np.number]).columns
             if c != "target_value"
+            and not c.startswith("midas__")
         ]
         if len(numeric_cols) < 2:
             return out
@@ -478,21 +619,42 @@ class FeatureEngineer:
             registry.register(diff_col, "interaction", None, None, "交互", "difference", "quarterly")
         return out
 
-    def _clean_and_impute(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _clean_and_impute(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+        clean_notes: List[str] = []
         out = df.copy()
         # Drop rows without target FIRST, before any fill.
-        # This prevents the outer-merge artifacts (128 rows  > 64 valid quarters)
-        # from corrupting the fill logic's last_valid_idx calculation.
         out = out.dropna(subset=["target_value"]).reset_index(drop=True)
 
+        # ---- MIDAS 列特殊处理：组内前向填充，仍缺失则填列中位数 ----
+        midas_cols = [c for c in out.columns if c.startswith("midas__")]
+        if midas_cols:
+            midas_filled_count = 0
+            midas_total_na = int(out[midas_cols].isna().sum().sum())
+            for col in midas_cols:
+                ser = out[col]
+                na_before = int(ser.isna().sum())
+                if self.config.clip_outliers:
+                    ser = winsorize_series(ser, self.config.winsorize_quantile)
+                # 组内前向填充（按时间顺序）
+                if na_before > 0:
+                    ser = ser.ffill().bfill()
+                    # 仍缺失则填中位数
+                    still_na = int(ser.isna().sum())
+                    if still_na > 0 and not ser.dropna().empty:
+                        ser = ser.fillna(ser.median())
+                        midas_filled_count += still_na
+                out[col] = ser
+            if midas_total_na > 0:
+                fill_pct = midas_filled_count / max(midas_total_na, 1) * 100
+                clean_notes.append(f"midas_impute: {midas_total_na} NA, {midas_filled_count} median-filled ({fill_pct:.1f}%)")
+
         for col in out.select_dtypes(include=[np.number]).columns:
-            if col == "target_value":
+            if col == "target_value" or col.startswith("midas__"):
                 continue
             ser = out[col]
             if self.config.clip_outliers:
                 ser = winsorize_series(ser, self.config.winsorize_quantile)
             if self.config.fill_method == "ffill_bfill":
-                # Only ffill for internal gaps — do NOT fill tail-end missing
                 non_na_mask = ser.notna()
                 if non_na_mask.any():
                     last_valid_idx = int(non_na_mask[non_na_mask].index[-1])
@@ -512,7 +674,7 @@ class FeatureEngineer:
             if miss_ratio <= self.config.max_feature_missing_ratio and non_na_count >= self.config.min_non_na_observations:
                 keep_cols.append(col)
         out = out[keep_cols].copy()
-        return out
+        return out, clean_notes
 
     def build_training_panel(
         self,
@@ -550,6 +712,19 @@ class FeatureEngineer:
                 frames.append(national_agg)
             notes.append("rebuilt_monthly_aggregations")
 
+        # MIDAS 月度滞后面板（并行通道，不替换聚合面板）
+        midas_local, midas_local_notes = self._build_midas_lag_panel(
+            monthly_local_df, "monthly_local", registry, metadata_df)
+        if not midas_local.empty:
+            frames.append(midas_local)
+        notes.extend(midas_local_notes)
+
+        midas_national, midas_national_notes = self._build_midas_lag_panel(
+            monthly_national_df, "monthly_national", registry, metadata_df)
+        if not midas_national.empty:
+            frames.append(midas_national)
+        notes.extend(midas_national_notes)
+
         if quarterly_factor_frame is not None and not quarterly_factor_frame.empty:
             frames.append(quarterly_factor_frame.copy())
             notes.append("attached_dfm_quarterly_factors")
@@ -563,7 +738,8 @@ class FeatureEngineer:
         panel = self._add_feature_lags(panel, registry)
         panel = self._add_family_features(panel, registry)
         panel = self._add_interactions(panel, registry)
-        panel = self._clean_and_impute(panel)
+        panel, clean_notes = self._clean_and_impute(panel)
+        notes.extend(clean_notes)
 
         # 特征选择
         protected = ["quarter_end", "target_value"]

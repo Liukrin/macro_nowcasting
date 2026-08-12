@@ -11,6 +11,7 @@ import pandas as pd
 from ..config import BacktestConfig, ModelConfig
 from ..logging_utils import get_logger
 from .model_selection import ModelFactory
+from .base import select_model_features
 from ..utils import metrics_dict, pretty_quarter
 from ..exceptions import BacktestError
 
@@ -47,8 +48,25 @@ class ExpandingWindowBacktester:
         selected_model_name: Optional[str] = None,
         base_series: Optional[pd.Series] = None,
     ) -> Dict[str, Any]:
+        """执行 expanding-window 回测。
+
+        约束：若提供 base_series（delta→level 还原），base_series 必须与 panel
+        共享索引。调用方不得在 _apply_target_transform 返回之后对 panel 执行
+        reset_index，否则 reindex 将按标签错误匹配导致静默的数据污染。
+        """
         if panel.empty:
             raise BacktestError("回测面板为空")
+
+        # 护栏：base_series 与 panel 索引对齐校验
+        if base_series is not None:
+            extra_in_panel = panel.index.difference(base_series.index)
+            if len(extra_in_panel) > 0:
+                raise BacktestError(
+                    f"base_series 与 panel 索引未对齐：panel 有 {len(extra_in_panel)} 个索引值"
+                    f" 不在 base_series 中。可能由上游 reset_index 导致，"
+                    f" 请确保 _apply_target_transform 返回后未对 panel 重建索引。"
+                )
+
         quarters = self._quarters(panel)
         if len(quarters) < self.bt_config.initial_train_quarters + 1:
             raise BacktestError("季度样本太少，无法做 expanding-window 回测")
@@ -80,22 +98,31 @@ class ExpandingWindowBacktester:
             if model_name == "auto":
                 model_name = self.model_config.candidate_models[-1] if self.model_config.candidate_models else "hybrid_residual"
             model = self.factory.create(model_name)
-            model.fit(X_train, y_train)
+            X_train_f = select_model_features(model, X_train)
+            X_test_f = select_model_features(model, X_test)
+            model.fit(X_train_f, y_train)
 
             if hasattr(model, "predict_components"):
-                comp = model.predict_components(X_test)
+                comp = model.predict_components(X_test_f)
                 pred = comp["final_prediction"]
                 linear = float(comp["linear_prediction"][0]) if len(comp["linear_prediction"]) else None
                 nonlinear = float(comp["nonlinear_correction"][0]) if len(comp["nonlinear_correction"]) else None
             else:
-                pred = model.predict(X_test)
+                pred = model.predict(X_test_f)
                 linear = None
                 nonlinear = None
 
             # 若在 delta 空间训练/预测，则用该窗口对应的 y_{t-1} 加回到 level，
             # 使窗口指标与最终 metrics 的 RMSE 单位仍为"百分点"
             if base_series is not None:
-                base_val = float(base_series.reindex(test_df.index).iloc[0])
+                base_val_raw = base_series.reindex(test_df.index).iloc[0]
+                if pd.isna(base_val_raw):
+                    raise BacktestError(
+                        f"base_series 在窗口 {pretty_quarter(test_quarter)} 取到 NaN，"
+                        f" test_df.index={test_df.index.tolist()} 可能在 base_series.index 中无对应。"
+                        f" 请检查 panel 是否在上游被 reset_index 重建了索引。"
+                    )
+                base_val = float(base_val_raw)
                 actual_level = base_val + float(y_test.iloc[0])
                 pred_level = base_val + float(pred[0])
             else:

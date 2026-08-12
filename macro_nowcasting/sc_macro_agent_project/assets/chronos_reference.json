@@ -1,0 +1,903 @@
+{
+  "generated_at": "2026-08-12T03:00:00.254449+00:00",
+  "chronos_model_name": "amazon/chronos-bolt-tiny",
+  "torch_version": "2.11.0+cpu",
+  "chronos_version": "2.2.2",
+  "data_vintage": "2025-12-31",
+  "n_windows": 32,
+  "results": {
+    "ridge_midas": {
+      "rmse": 3.160844659684273,
+      "mae": 1.613155502652827,
+      "r2": 0.09992095190870243,
+      "direction_accuracy": 0.5483870967741935,
+      "n_windows": 32
+    },
+    "hybrid_residual": {
+      "rmse": 3.627649705709125,
+      "mae": 1.8444497668850741,
+      "r2": -0.18556408494699306,
+      "direction_accuracy": 0.5806451612903226,
+      "n_windows": 32
+    },
+    "hybrid_chronos": {
+      "rmse": 3.71025518440914,
+      "mae": 1.8773686335221846,
+      "r2": -0.24017196000493812,
+      "direction_accuracy": 0.6129032258064516,
+      "n_windows": 32
+    }
+  },
+  "window_details": {
+    "ridge_midas": [
+      {
+        "train_end": "2017Q4",
+        "test_quarter": "2018Q1",
+        "model_name": "ridge_midas",
+        "actual": 8.200000000000003,
+        "prediction": 8.096047651760706,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2018Q1",
+        "test_quarter": "2018Q2",
+        "model_name": "ridge_midas",
+        "actual": 8.200000000000003,
+        "prediction": 8.177509598334776,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2018Q2",
+        "test_quarter": "2018Q3",
+        "model_name": "ridge_midas",
+        "actual": 8.099999999999994,
+        "prediction": 8.22000179811314,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2018Q3",
+        "test_quarter": "2018Q4",
+        "model_name": "ridge_midas",
+        "actual": 8.0,
+        "prediction": 8.05503468596656,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2018Q4",
+        "test_quarter": "2019Q1",
+        "model_name": "ridge_midas",
+        "actual": 7.700000000000003,
+        "prediction": 7.864227895117798,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2019Q1",
+        "test_quarter": "2019Q2",
+        "model_name": "ridge_midas",
+        "actual": 7.799999999999997,
+        "prediction": 7.627589372027905,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2019Q2",
+        "test_quarter": "2019Q3",
+        "model_name": "ridge_midas",
+        "actual": 7.700000000000003,
+        "prediction": 7.683868613954076,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2019Q3",
+        "test_quarter": "2019Q4",
+        "model_name": "ridge_midas",
+        "actual": 7.400000000000006,
+        "prediction": 7.726888063190226,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2019Q4",
+        "test_quarter": "2020Q1",
+        "model_name": "ridge_midas",
+        "actual": -2.9000000000000057,
+        "prediction": 7.313724457136322,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2020Q1",
+        "test_quarter": "2020Q2",
+        "model_name": "ridge_midas",
+        "actual": 0.5999999999999943,
+        "prediction": -4.428351206421727,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2020Q2",
+        "test_quarter": "2020Q3",
+        "model_name": "ridge_midas",
+        "actual": 2.4000000000000057,
+        "prediction": 0.807573087777969,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2020Q3",
+        "test_quarter": "2020Q4",
+        "model_name": "ridge_midas",
+        "actual": 3.799999999999997,
+        "prediction": 2.7771212162460444,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2020Q4",
+        "test_quarter": "2021Q1",
+        "model_name": "ridge_midas",
+        "actual": 15.900000000000006,
+        "prediction": 3.887495646241789,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2021Q1",
+        "test_quarter": "2021Q2",
+        "model_name": "ridge_midas",
+        "actual": 12.200000000000005,
+        "prediction": 16.395039894622986,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2021Q2",
+        "test_quarter": "2021Q3",
+        "model_name": "ridge_midas",
+        "actual": 9.299999999999995,
+        "prediction": 11.427534449221664,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2021Q3",
+        "test_quarter": "2021Q4",
+        "model_name": "ridge_midas",
+        "actual": 8.200000000000003,
+        "prediction": 8.25811477545533,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2021Q4",
+        "test_quarter": "2022Q1",
+        "model_name": "ridge_midas",
+        "actual": 5.299999999999997,
+        "prediction": 7.435461912570438,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2022Q1",
+        "test_quarter": "2022Q2",
+        "model_name": "ridge_midas",
+        "actual": 2.799999999999997,
+        "prediction": 5.101896378007548,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2022Q2",
+        "test_quarter": "2022Q3",
+        "model_name": "ridge_midas",
+        "actual": 1.5,
+        "prediction": 3.034317541669256,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2022Q3",
+        "test_quarter": "2022Q4",
+        "model_name": "ridge_midas",
+        "actual": 2.9000000000000057,
+        "prediction": 1.923761615781779,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2022Q4",
+        "test_quarter": "2023Q1",
+        "model_name": "ridge_midas",
+        "actual": 3.799999999999997,
+        "prediction": 2.4429067860891096,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2023Q1",
+        "test_quarter": "2023Q2",
+        "model_name": "ridge_midas",
+        "actual": 5.5,
+        "prediction": 4.631875594997048,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2023Q2",
+        "test_quarter": "2023Q3",
+        "model_name": "ridge_midas",
+        "actual": 6.5,
+        "prediction": 5.317578712264571,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2023Q3",
+        "test_quarter": "2023Q4",
+        "model_name": "ridge_midas",
+        "actual": 6.0,
+        "prediction": 6.581430159217412,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2023Q4",
+        "test_quarter": "2024Q1",
+        "model_name": "ridge_midas",
+        "actual": 6.099999999999994,
+        "prediction": 5.743542782033041,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2024Q1",
+        "test_quarter": "2024Q2",
+        "model_name": "ridge_midas",
+        "actual": 5.400000000000006,
+        "prediction": 6.603867854647481,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2024Q2",
+        "test_quarter": "2024Q3",
+        "model_name": "ridge_midas",
+        "actual": 5.299999999999997,
+        "prediction": 5.659351543094597,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2024Q3",
+        "test_quarter": "2024Q4",
+        "model_name": "ridge_midas",
+        "actual": 5.700000000000003,
+        "prediction": 5.578993472466601,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2024Q4",
+        "test_quarter": "2025Q1",
+        "model_name": "ridge_midas",
+        "actual": 5.5,
+        "prediction": 6.211477846576177,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2025Q1",
+        "test_quarter": "2025Q2",
+        "model_name": "ridge_midas",
+        "actual": 5.599999999999994,
+        "prediction": 5.922511794133414,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2025Q2",
+        "test_quarter": "2025Q3",
+        "model_name": "ridge_midas",
+        "actual": 5.5,
+        "prediction": 5.729063024266003,
+        "linear_component": null,
+        "nonlinear_component": null
+      },
+      {
+        "train_end": "2025Q3",
+        "test_quarter": "2025Q4",
+        "model_name": "ridge_midas",
+        "actual": 5.5,
+        "prediction": 5.648544955437792,
+        "linear_component": null,
+        "nonlinear_component": null
+      }
+    ],
+    "hybrid_residual": [
+      {
+        "train_end": "2017Q4",
+        "test_quarter": "2018Q1",
+        "model_name": "hybrid_residual",
+        "actual": 8.200000000000003,
+        "prediction": 8.109106528704123,
+        "linear_component": -0.003952348239287862,
+        "nonlinear_component": 0.013058876943416698
+      },
+      {
+        "train_end": "2018Q1",
+        "test_quarter": "2018Q2",
+        "model_name": "hybrid_residual",
+        "actual": 8.200000000000003,
+        "prediction": 8.209641520598556,
+        "linear_component": -0.022490401665225923,
+        "nonlinear_component": 0.03213192226377928
+      },
+      {
+        "train_end": "2018Q2",
+        "test_quarter": "2018Q3",
+        "model_name": "hybrid_residual",
+        "actual": 8.099999999999994,
+        "prediction": 8.325083139958435,
+        "linear_component": 0.020001798113136682,
+        "nonlinear_component": 0.10508134184529538
+      },
+      {
+        "train_end": "2018Q3",
+        "test_quarter": "2018Q4",
+        "model_name": "hybrid_residual",
+        "actual": 8.0,
+        "prediction": 8.159998817928695,
+        "linear_component": -0.04496531403343543,
+        "nonlinear_component": 0.10496413196213669
+      },
+      {
+        "train_end": "2018Q4",
+        "test_quarter": "2019Q1",
+        "model_name": "hybrid_residual",
+        "actual": 7.700000000000003,
+        "prediction": 7.887750205481677,
+        "linear_component": -0.13577210488220176,
+        "nonlinear_component": 0.023522310363878415
+      },
+      {
+        "train_end": "2019Q1",
+        "test_quarter": "2019Q2",
+        "model_name": "hybrid_residual",
+        "actual": 7.799999999999997,
+        "prediction": 7.903670591241851,
+        "linear_component": -0.07241062797209832,
+        "nonlinear_component": 0.2760812192139467
+      },
+      {
+        "train_end": "2019Q2",
+        "test_quarter": "2019Q3",
+        "model_name": "hybrid_residual",
+        "actual": 7.700000000000003,
+        "prediction": 7.824593809424716,
+        "linear_component": -0.1161313860459208,
+        "nonlinear_component": 0.14072519547063952
+      },
+      {
+        "train_end": "2019Q3",
+        "test_quarter": "2019Q4",
+        "model_name": "hybrid_residual",
+        "actual": 7.400000000000006,
+        "prediction": 7.776886293588403,
+        "linear_component": 0.02688806319022302,
+        "nonlinear_component": 0.04999823039817721
+      },
+      {
+        "train_end": "2019Q4",
+        "test_quarter": "2020Q1",
+        "model_name": "hybrid_residual",
+        "actual": -2.9000000000000057,
+        "prediction": 7.414159057193511,
+        "linear_component": -0.08627554286368305,
+        "nonlinear_component": 0.10043460005718792
+      },
+      {
+        "train_end": "2020Q1",
+        "test_quarter": "2020Q2",
+        "model_name": "hybrid_residual",
+        "actual": 0.5999999999999943,
+        "prediction": -5.191181854275012,
+        "linear_component": -1.5283512064217213,
+        "nonlinear_component": -0.7628306478532845
+      },
+      {
+        "train_end": "2020Q2",
+        "test_quarter": "2020Q3",
+        "model_name": "hybrid_residual",
+        "actual": 2.4000000000000057,
+        "prediction": 0.8355975458322008,
+        "linear_component": 0.20757308777797462,
+        "nonlinear_component": 0.028024458054231847
+      },
+      {
+        "train_end": "2020Q3",
+        "test_quarter": "2020Q4",
+        "model_name": "hybrid_residual",
+        "actual": 3.799999999999997,
+        "prediction": 3.7605945095798434,
+        "linear_component": 0.3771212162460388,
+        "nonlinear_component": 0.9834732933337988
+      },
+      {
+        "train_end": "2020Q4",
+        "test_quarter": "2021Q1",
+        "model_name": "hybrid_residual",
+        "actual": 15.900000000000006,
+        "prediction": 1.3790696515603904,
+        "linear_component": 0.08749564624179168,
+        "nonlinear_component": -2.5084259946813985
+      },
+      {
+        "train_end": "2021Q1",
+        "test_quarter": "2021Q2",
+        "model_name": "hybrid_residual",
+        "actual": 12.200000000000005,
+        "prediction": 17.325746987683992,
+        "linear_component": 0.4950398946229787,
+        "nonlinear_component": 0.930707093061007
+      },
+      {
+        "train_end": "2021Q2",
+        "test_quarter": "2021Q3",
+        "model_name": "hybrid_residual",
+        "actual": 9.299999999999995,
+        "prediction": 10.933577336998452,
+        "linear_component": -0.7724655507783404,
+        "nonlinear_component": -0.4939571122232125
+      },
+      {
+        "train_end": "2021Q3",
+        "test_quarter": "2021Q4",
+        "model_name": "hybrid_residual",
+        "actual": 8.200000000000003,
+        "prediction": 7.762244949906521,
+        "linear_component": -1.0418852245446668,
+        "nonlinear_component": -0.49586982554880693
+      },
+      {
+        "train_end": "2021Q4",
+        "test_quarter": "2022Q1",
+        "model_name": "hybrid_residual",
+        "actual": 5.299999999999997,
+        "prediction": 7.394389281476615,
+        "linear_component": -0.7645380874295647,
+        "nonlinear_component": -0.041072631093823336
+      },
+      {
+        "train_end": "2022Q1",
+        "test_quarter": "2022Q2",
+        "model_name": "hybrid_residual",
+        "actual": 2.799999999999997,
+        "prediction": 5.0283494880548885,
+        "linear_component": -0.1981036219924492,
+        "nonlinear_component": -0.07354688995265973
+      },
+      {
+        "train_end": "2022Q2",
+        "test_quarter": "2022Q3",
+        "model_name": "hybrid_residual",
+        "actual": 1.5,
+        "prediction": 3.658735296617367,
+        "linear_component": 0.2343175416692589,
+        "nonlinear_component": 0.6244177549481109
+      },
+      {
+        "train_end": "2022Q3",
+        "test_quarter": "2022Q4",
+        "model_name": "hybrid_residual",
+        "actual": 2.9000000000000057,
+        "prediction": -0.13350095565185804,
+        "linear_component": 0.4237616157817789,
+        "nonlinear_component": -2.057262571433637
+      },
+      {
+        "train_end": "2022Q4",
+        "test_quarter": "2023Q1",
+        "model_name": "hybrid_residual",
+        "actual": 3.799999999999997,
+        "prediction": 1.1444880143832101,
+        "linear_component": -0.45709321391089613,
+        "nonlinear_component": -1.2984187717058995
+      },
+      {
+        "train_end": "2023Q1",
+        "test_quarter": "2023Q2",
+        "model_name": "hybrid_residual",
+        "actual": 5.5,
+        "prediction": 3.1527890018759908,
+        "linear_component": 0.8318755949970507,
+        "nonlinear_component": -1.479086593121057
+      },
+      {
+        "train_end": "2023Q2",
+        "test_quarter": "2023Q3",
+        "model_name": "hybrid_residual",
+        "actual": 6.5,
+        "prediction": 6.038370812313503,
+        "linear_component": -0.1824212877354286,
+        "nonlinear_component": 0.7207921000489316
+      },
+      {
+        "train_end": "2023Q3",
+        "test_quarter": "2023Q4",
+        "model_name": "hybrid_residual",
+        "actual": 6.0,
+        "prediction": 6.4254655953652975,
+        "linear_component": 0.08143015921741156,
+        "nonlinear_component": -0.15596456385211407
+      },
+      {
+        "train_end": "2023Q4",
+        "test_quarter": "2024Q1",
+        "model_name": "hybrid_residual",
+        "actual": 6.099999999999994,
+        "prediction": 5.946640055738278,
+        "linear_component": -0.25645721796695903,
+        "nonlinear_component": 0.203097273705237
+      },
+      {
+        "train_end": "2024Q1",
+        "test_quarter": "2024Q2",
+        "model_name": "hybrid_residual",
+        "actual": 5.400000000000006,
+        "prediction": 6.757797834958949,
+        "linear_component": 0.5038678546474868,
+        "nonlinear_component": 0.15392998031146815
+      },
+      {
+        "train_end": "2024Q2",
+        "test_quarter": "2024Q3",
+        "model_name": "hybrid_residual",
+        "actual": 5.299999999999997,
+        "prediction": 5.438329715550597,
+        "linear_component": 0.2593515430945912,
+        "nonlinear_component": -0.22102182754399954
+      },
+      {
+        "train_end": "2024Q3",
+        "test_quarter": "2024Q4",
+        "model_name": "hybrid_residual",
+        "actual": 5.700000000000003,
+        "prediction": 5.400111361771552,
+        "linear_component": 0.27899347246660366,
+        "nonlinear_component": -0.17888211069504828
+      },
+      {
+        "train_end": "2024Q4",
+        "test_quarter": "2025Q1",
+        "model_name": "hybrid_residual",
+        "actual": 5.5,
+        "prediction": 5.960106124281158,
+        "linear_component": 0.5114778465761736,
+        "nonlinear_component": -0.25137172229501775
+      },
+      {
+        "train_end": "2025Q1",
+        "test_quarter": "2025Q2",
+        "model_name": "hybrid_residual",
+        "actual": 5.599999999999994,
+        "prediction": 5.302348727417272,
+        "linear_component": 0.4225117941334146,
+        "nonlinear_component": -0.6201630667161431
+      },
+      {
+        "train_end": "2025Q2",
+        "test_quarter": "2025Q3",
+        "model_name": "hybrid_residual",
+        "actual": 5.5,
+        "prediction": 5.614487029167573,
+        "linear_component": 0.12906302426600844,
+        "nonlinear_component": -0.11457599509843018
+      },
+      {
+        "train_end": "2025Q3",
+        "test_quarter": "2025Q4",
+        "model_name": "hybrid_residual",
+        "actual": 5.5,
+        "prediction": 5.409697236092351,
+        "linear_component": 0.1485449554377922,
+        "nonlinear_component": -0.23884771934544116
+      }
+    ],
+    "hybrid_chronos": [
+      {
+        "train_end": "2017Q4",
+        "test_quarter": "2018Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 8.200000000000003,
+        "prediction": 8.068434356518516,
+        "linear_component": -0.003952348239287862,
+        "nonlinear_component": -0.02761329524219036
+      },
+      {
+        "train_end": "2018Q1",
+        "test_quarter": "2018Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 8.200000000000003,
+        "prediction": 8.23715386157249,
+        "linear_component": -0.022490401665225923,
+        "nonlinear_component": 0.05964426323771477
+      },
+      {
+        "train_end": "2018Q2",
+        "test_quarter": "2018Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 8.099999999999994,
+        "prediction": 8.285166222592148,
+        "linear_component": 0.020001798113136682,
+        "nonlinear_component": 0.06516442447900772
+      },
+      {
+        "train_end": "2018Q3",
+        "test_quarter": "2018Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 8.0,
+        "prediction": 8.071268959057518,
+        "linear_component": -0.04496531403343543,
+        "nonlinear_component": 0.016234273090958595
+      },
+      {
+        "train_end": "2018Q4",
+        "test_quarter": "2019Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 7.700000000000003,
+        "prediction": 7.848158125258484,
+        "linear_component": -0.13577210488220176,
+        "nonlinear_component": -0.016069769859313965
+      },
+      {
+        "train_end": "2019Q1",
+        "test_quarter": "2019Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 7.799999999999997,
+        "prediction": 7.620049470611156,
+        "linear_component": -0.07241062797209832,
+        "nonlinear_component": -0.007539901416748762
+      },
+      {
+        "train_end": "2019Q2",
+        "test_quarter": "2019Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 7.700000000000003,
+        "prediction": 7.741538357849607,
+        "linear_component": -0.1161313860459208,
+        "nonlinear_component": 0.0576697438955307
+      },
+      {
+        "train_end": "2019Q3",
+        "test_quarter": "2019Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 7.400000000000006,
+        "prediction": 7.699628538278584,
+        "linear_component": 0.02688806319022302,
+        "nonlinear_component": -0.027259524911642075
+      },
+      {
+        "train_end": "2019Q4",
+        "test_quarter": "2020Q1",
+        "model_name": "hybrid_chronos",
+        "actual": -2.9000000000000057,
+        "prediction": 7.248657948187519,
+        "linear_component": -0.08627554286368305,
+        "nonlinear_component": -0.06506650894880295
+      },
+      {
+        "train_end": "2020Q1",
+        "test_quarter": "2020Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 0.5999999999999943,
+        "prediction": -10.704039854645604,
+        "linear_component": -1.5283512064217213,
+        "nonlinear_component": -6.275688648223877
+      },
+      {
+        "train_end": "2020Q2",
+        "test_quarter": "2020Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 2.4000000000000057,
+        "prediction": 0.8089134638747466,
+        "linear_component": 0.20757308777797462,
+        "nonlinear_component": 0.001340376096777618
+      },
+      {
+        "train_end": "2020Q3",
+        "test_quarter": "2020Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 3.799999999999997,
+        "prediction": 2.8715978713716623,
+        "linear_component": 0.3771212162460388,
+        "nonlinear_component": 0.09447665512561798
+      },
+      {
+        "train_end": "2020Q4",
+        "test_quarter": "2021Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 15.900000000000006,
+        "prediction": 4.07498005962718,
+        "linear_component": 0.08749564624179168,
+        "nonlinear_component": 0.18748441338539124
+      },
+      {
+        "train_end": "2021Q1",
+        "test_quarter": "2021Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 12.200000000000005,
+        "prediction": 18.79872999433917,
+        "linear_component": 0.4950398946229787,
+        "nonlinear_component": 2.4036900997161865
+      },
+      {
+        "train_end": "2021Q2",
+        "test_quarter": "2021Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 9.299999999999995,
+        "prediction": 10.940035539986663,
+        "linear_component": -0.7724655507783404,
+        "nonlinear_component": -0.4874989092350006
+      },
+      {
+        "train_end": "2021Q3",
+        "test_quarter": "2021Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 8.200000000000003,
+        "prediction": 7.879134824312064,
+        "linear_component": -1.0418852245446668,
+        "nonlinear_component": -0.37897995114326477
+      },
+      {
+        "train_end": "2021Q4",
+        "test_quarter": "2022Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 5.299999999999997,
+        "prediction": 7.14484247964426,
+        "linear_component": -0.7645380874295647,
+        "nonlinear_component": -0.290619432926178
+      },
+      {
+        "train_end": "2022Q1",
+        "test_quarter": "2022Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 2.799999999999997,
+        "prediction": 4.563579651322978,
+        "linear_component": -0.1981036219924492,
+        "nonlinear_component": -0.5383167266845703
+      },
+      {
+        "train_end": "2022Q2",
+        "test_quarter": "2022Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 1.5,
+        "prediction": 2.1903805022939506,
+        "linear_component": 0.2343175416692589,
+        "nonlinear_component": -0.8439370393753052
+      },
+      {
+        "train_end": "2022Q3",
+        "test_quarter": "2022Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 2.9000000000000057,
+        "prediction": 1.0600730872440287,
+        "linear_component": 0.4237616157817789,
+        "nonlinear_component": -0.8636885285377502
+      },
+      {
+        "train_end": "2022Q4",
+        "test_quarter": "2023Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 3.799999999999997,
+        "prediction": 1.9967813681413404,
+        "linear_component": -0.45709321391089613,
+        "nonlinear_component": -0.44612541794776917
+      },
+      {
+        "train_end": "2023Q1",
+        "test_quarter": "2023Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 5.5,
+        "prediction": 4.314409753226876,
+        "linear_component": 0.8318755949970507,
+        "nonlinear_component": -0.3174658417701721
+      },
+      {
+        "train_end": "2023Q2",
+        "test_quarter": "2023Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 6.5,
+        "prediction": 5.186659881631408,
+        "linear_component": -0.1824212877354286,
+        "nonlinear_component": -0.13091883063316345
+      },
+      {
+        "train_end": "2023Q3",
+        "test_quarter": "2023Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 6.0,
+        "prediction": 6.647181823557908,
+        "linear_component": 0.08143015921741156,
+        "nonlinear_component": 0.06575166434049606
+      },
+      {
+        "train_end": "2023Q4",
+        "test_quarter": "2024Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 6.099999999999994,
+        "prediction": 5.365049979651525,
+        "linear_component": -0.25645721796695903,
+        "nonlinear_component": -0.3784928023815155
+      },
+      {
+        "train_end": "2024Q1",
+        "test_quarter": "2024Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 5.400000000000006,
+        "prediction": 6.721144113414132,
+        "linear_component": 0.5038678546474868,
+        "nonlinear_component": 0.11727625876665115
+      },
+      {
+        "train_end": "2024Q2",
+        "test_quarter": "2024Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 5.299999999999997,
+        "prediction": 5.421089455987892,
+        "linear_component": 0.2593515430945912,
+        "nonlinear_component": -0.2382620871067047
+      },
+      {
+        "train_end": "2024Q3",
+        "test_quarter": "2024Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 5.700000000000003,
+        "prediction": 5.43214924932493,
+        "linear_component": 0.27899347246660366,
+        "nonlinear_component": -0.14684422314167023
+      },
+      {
+        "train_end": "2024Q4",
+        "test_quarter": "2025Q1",
+        "model_name": "hybrid_chronos",
+        "actual": 5.5,
+        "prediction": 6.0428284711374864,
+        "linear_component": 0.5114778465761736,
+        "nonlinear_component": -0.16864937543869019
+      },
+      {
+        "train_end": "2025Q1",
+        "test_quarter": "2025Q2",
+        "model_name": "hybrid_chronos",
+        "actual": 5.599999999999994,
+        "prediction": 5.898901906324853,
+        "linear_component": 0.4225117941334146,
+        "nonlinear_component": -0.023609887808561325
+      },
+      {
+        "train_end": "2025Q2",
+        "test_quarter": "2025Q3",
+        "model_name": "hybrid_chronos",
+        "actual": 5.5,
+        "prediction": 5.684567203266857,
+        "linear_component": 0.12906302426600844,
+        "nonlinear_component": -0.04449582099914551
+      },
+      {
+        "train_end": "2025Q3",
+        "test_quarter": "2025Q4",
+        "model_name": "hybrid_chronos",
+        "actual": 5.5,
+        "prediction": 5.565136629527224,
+        "linear_component": 0.1485449554377922,
+        "nonlinear_component": -0.08340832591056824
+      }
+    ]
+  }
+}

@@ -18,8 +18,10 @@ from ..logging_utils import get_logger
 from ..utils import metrics_dict
 from .baselines import LastValueModel, MeanRecentModel, SeasonalNaiveModel, DriftModel, ARIMABaselineModel
 from .midas_model import RidgeMIDASModel, ElasticMIDASModel
-from .hybrid_model import HybridResidualModel
+from .almon_midas import AlmonMIDASModel
+from .hybrid_model import HybridResidualModel, HybridChronosModel
 from ..exceptions import ModelTrainingError
+from .base import select_model_features
 
 
 @dataclass
@@ -61,6 +63,12 @@ class ModelFactory:
                 l1_ratios=self.config.elastic_l1_ratios,
                 random_state=self.config.random_state,
             )
+        if name == "almon_midas":
+            return AlmonMIDASModel(
+                theta_l2=self.config.almon_theta_l2,
+                theta1_bounds=self.config.almon_theta1_bounds,
+                theta2_bounds=self.config.almon_theta2_bounds,
+            )
         if name == "hybrid_residual":
             return HybridResidualModel(
                 ridge_alphas=self.config.ridge_alphas,
@@ -69,6 +77,11 @@ class ModelFactory:
                 max_depth=self.config.residual_max_depth,
                 min_samples_leaf=self.config.residual_min_samples_leaf,
                 min_train_rows_for_tree=self.config.min_train_rows_for_tree,
+            )
+        if name == "hybrid_chronos":
+            return HybridChronosModel(
+                ridge_alphas=self.config.ridge_alphas,
+                random_state=self.config.random_state,
             )
         raise ModelTrainingError(f"未知模型: {name}")
 
@@ -91,8 +104,10 @@ class ModelSelector:
         y_valid: pd.Series,
     ) -> LeaderboardEntry:
         notes: List[str] = []
-        model.fit(X_train, y_train)
-        pred = model.predict(X_valid)
+        X_train_f = select_model_features(model, X_train)
+        X_valid_f = select_model_features(model, X_valid)
+        model.fit(X_train_f, y_train)
+        pred = model.predict(X_valid_f)
         m = metrics_dict(y_valid, pred)
         if hasattr(model, "use_tree_") and not getattr(model, "use_tree_", True):
             notes.append("tree_disabled_due_to_small_sample")
@@ -131,5 +146,7 @@ class ModelSelector:
         leaderboard.sort(key=lambda x: (x.rmse, x.mae))
         best_name = leaderboard[0].model_name
         best_model = self.factory.create(best_name)
-        best_model.fit(pd.concat([X_train, X_valid]), pd.concat([y_train, y_valid]))
+        X_all = pd.concat([X_train, X_valid])
+        y_all = pd.concat([y_train, y_valid])
+        best_model.fit(select_model_features(best_model, X_all), y_all)
         return best_model, [item.as_dict() for item in leaderboard]
