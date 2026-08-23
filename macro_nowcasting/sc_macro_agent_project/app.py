@@ -1303,10 +1303,10 @@ def render_nowcast(data: Dict[str, Any]) -> None:
                     for mname, r in (_ref.get("results") or {}).items():
                         ref_rows.append({
                             "模型": mname,
-                            "RMSE": f'{r[\"rmse\"]:.4f}',
-                            "MAE": f'{r[\"mae\"]:.4f}',
-                            "R²": f'{r[\"r2\"]:+.4f}',
-                            "方向准确率": f'{r[\"direction_accuracy\"]:.1%}',
+                            "RMSE": f'{r["rmse"]:.4f}',
+                            "MAE": f'{r["mae"]:.4f}',
+                            "R²": f'{r["r2"]:+.4f}',
+                            "方向准确率": f'{r["direction_accuracy"]:.1%}',
                             "窗口数": r["n_windows"],
                         })
                     if ref_rows:

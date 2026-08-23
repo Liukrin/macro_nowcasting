@@ -92,6 +92,26 @@ def check_deadline(deadline: float) -> bool:
     return time.perf_counter() < deadline
 
 
+def _resolve_api_key() -> Optional[str]:
+    """解析 DeepSeek API Key，优先级：环境变量 > st.secrets > None(mock)。
+
+    Streamlit Cloud 会把 Secrets 同时注入 st.secrets 与环境变量；
+    本地 CLI / 无 secrets.toml 时 st.secrets 为空映射或 import 失败，
+    这里统一 try/except 兜底，保证任何场景都不抛异常。
+    """
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if key:
+        return key
+    try:
+        import streamlit as st
+        secret = st.secrets.get("DEEPSEEK_API_KEY")
+        if secret:
+            return str(secret)
+    except Exception:
+        pass
+    return None
+
+
 class LLMClient:
     """DeepSeek Chat 客户端（单例）。"""
 
@@ -108,7 +128,7 @@ class LLMClient:
 
     def __init__(self) -> None:
         self.logger = get_logger("sc_macro_agent.llm")
-        self.api_key = os.environ.get("DEEPSEEK_API_KEY")
+        self.api_key = _resolve_api_key()
         self.base_url = "https://api.deepseek.com"
         self.model = "deepseek-v4-flash"
         self.is_mock = self.api_key is None
