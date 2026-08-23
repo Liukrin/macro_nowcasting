@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import re
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 def parse_any_date(val):
     """Parse date from various formats. Returns datetime or NaT."""

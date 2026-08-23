@@ -1,4 +1,9 @@
 """LLM 连接测试。若无 API Key，验证 mock 降级路径。"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from dotenv import load_dotenv
 load_dotenv()
 

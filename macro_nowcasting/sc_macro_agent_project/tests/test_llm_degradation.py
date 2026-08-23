@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import time
 import sys
-sys.path.insert(0, "D:/PythonProject/macro_nowcasting/sc_macro_agent_project")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 load_dotenv()

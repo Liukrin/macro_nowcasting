@@ -3,10 +3,13 @@
 """
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sc_macro_agent import AppConfig, PredictionEngine
 from sc_macro_agent.models.backtesting import ExpandingWindowBacktester
@@ -17,7 +20,7 @@ class TestPredictionEngine(unittest.TestCase):
 
     def setUp(self):
         self.config = AppConfig()
-        project_dir = Path(__file__).resolve().parent
+        project_dir = Path(__file__).resolve().parent.parent
         self.config.data.data_dir = str(project_dir / "data")
         self.config.data.artifact_dir = str(project_dir / "artifacts")
         self.config.data.dataset_mode = "real"

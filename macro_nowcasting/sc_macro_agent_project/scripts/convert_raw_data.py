@@ -26,7 +26,7 @@ reconfigure = getattr(sys.stdout, "reconfigure", None)
 if reconfigure is not None:
     reconfigure(encoding="utf-8")
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 def parse_quarter_time(val) -> str | None:
