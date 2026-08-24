@@ -1,4 +1,4 @@
-> 数据局限与估算说明以 artifacts/final/known_limitations.md 为准。
+> 数据局限与估算说明以 docs/known_limitations.md 为准。
 
 # 方法论
 
