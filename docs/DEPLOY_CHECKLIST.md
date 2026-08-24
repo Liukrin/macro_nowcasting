@@ -78,6 +78,7 @@ DEEPSEEK_API_KEY = "sk-xxxx"
 - App 页面右上角 **⋮（More）→ Manage app → ⋮ → 查看 Terminal / Logs**。
 - 首次部署会经历：克隆仓库 → 安装依赖（`requirements.txt`）→ 启动
   `streamlit run`。观察终端即可定位卡在哪一步。
+  > 依赖真相源为仓库根 `requirements.txt`；项目内同名文件为 `-r` 指针，新增依赖请改根文件。
 
 ---
 
