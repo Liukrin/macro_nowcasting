@@ -62,15 +62,17 @@ streamlit run macro_nowcasting/sc_macro_agent_project/app.py
 | seasonal_naive（基线） | 4.586 | 2.800 | -0.895 | 0.581 |
 | arima（基线） | 3.357 | 1.916 | -0.015 | 0.548 |
 
-**结论**：三模式下 elastic_midas 均显著优于所有基线，且是唯一 R² 为正的模型。
-但 vintage 影响方向与「泄漏假设」相反——可用月数越少、点预测 RMSE 越低
-（3.139→3.115→2.989），而方向准确率反向（0.613→0.548）。说明季度内后两个月的
-高频信息在当前累计同比口径下带来的是噪声而非信号，full_quarter 泄漏的是噪声而非信号。
+**结论**：三模式下 elastic_midas 的点预测精度均优于所有基线，且是唯一 R² 为正的模型。
+vintage 的影响方向与「泄漏假设」相反——可用月数越少、点预测 RMSE 越低
+（3.139→3.115→2.989），而方向准确率反向（0.613→0.548）。但 Diebold-Mariano 检验
+（含小样本修正）未能拒绝三模式两两「预测精度相同」的原假设（平方误差 p 均 ≥ 0.12），
+故不足以断言后两个月的信息为噪声；这一方向性差异在统计上尚未被证实。
 这是**诚实信息集下的真实表现**，本次对比未调任何超参、未换模型、未改特征集、未改回测窗口数。
+完整对比、DM 检验表与解读见
+[docs/vintage_comparison.md](macro_nowcasting/sc_macro_agent_project/docs/vintage_comparison.md)。
 
 > **口径说明**：上表为 level 空间回测 RMSE（单位百分点）。模型选择器按 delta 空间
-> 验证集 RMSE 排序，与 level 空间回测不可直接比较。完整对比与解读见
-> [docs/vintage_comparison.md](macro_nowcasting/sc_macro_agent_project/docs/vintage_comparison.md)。
+> 验证集 RMSE 排序，与 level 空间回测不可直接比较（该错位见下文「已知局限」）。
 
 ## 多智能体流水线
 
@@ -105,10 +107,14 @@ sc_macro_agent_project/
 
 ## 已知局限
 
-本项目主动记录了 13 条局限，其中最重要的一条（feature_vintage）现已实现：
+本项目主动记录了 14 条局限，其中最重要的一条（feature_vintage）现已实现：
 
 **feature_vintage 三模式已实现（默认 two_month）**——预测当季时通常仅前两月数据已发布，
 故默认 two_month；full_quarter 为泄漏上界参照（含尚未发布的第 3 个月）；
 指标级 ragged edge（按各指标真实发布时滞截断）为后续方向。
+
+**模型选择器标准错位**——选择标准（delta 空间验证集 RMSE）与评估标准（level 空间回测）
+不一致，导致默认选出的 ridge_midas（3.210）劣于被淘汰的 elastic_midas（3.115），
+该缺陷当前影响默认输出。
 
 完整清单见 [docs/known_limitations.md](macro_nowcasting/sc_macro_agent_project/docs/known_limitations.md)。

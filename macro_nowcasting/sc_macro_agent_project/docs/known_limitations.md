@@ -71,3 +71,10 @@ top-5 结果可能全部偏向一个区域，无法保证两个区域的结果�
 - 仓库保留 sc_macro_agent/data/data_generator.py 作为 dataset_mode=demo
   的降级路径，生成 source_name="SyntheticGenerator" 的占位数据。
   该路径不参与任何已报告的回测与预测结果，全部指标均由真实数据产出。
+
+## 14. 模型选择器标准错位（当前影响默认输出）
+- 模型选择器的选择标准（delta 空间验证集 RMSE）与最终评估标准（level 空间回测 RMSE）错位。
+  默认 feature_vintage=two_month 下，选择器按 delta 空间验证集选出 ridge_midas，
+  其在 level 空间 32 窗口回测 RMSE=3.210；而固定 elastic_midas 的 two_month 回测 RMSE=3.115，
+  即被淘汰的 elastic_midas 反而优于被选中的 ridge_midas。
+- 该错位当前影响默认输出（app 默认预测使用 ridge_midas）。本轮仅登记，未修复。
