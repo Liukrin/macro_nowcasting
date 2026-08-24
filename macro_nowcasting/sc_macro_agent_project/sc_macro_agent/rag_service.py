@@ -32,9 +32,10 @@ RAG_SERVICE_VERSION = "2.0.0"
 # ================================================================
 # 内置占位文本：云端部署无 artifacts/final/ 目录时的兜底
 # ================================================================
-# ⚠ 修改 artifacts/final/known_limitations.md 时必须同步更新此常量
-# ⚠ 修改 artifacts/final/data_lineage.md      时必须同步更新此常量
+# ⚠ 修改 docs/known_limitations.md 时必须同步更新此常量
+# ⚠ 修改 docs/data_lineage.md      时必须同步更新此常量
 
+# 兜底副本：docs/known_limitations.md 读取失败时使用，正常运行走 docs/ 下的源文件
 _BUILTIN_LIMITATIONS_TEXT = (
     "# 已知局限\n"
     "\n"
@@ -105,6 +106,7 @@ _BUILTIN_LIMITATIONS_TEXT = (
     "量级较小（top_k=5），实际影响有限，暂未实现。\n"
 )
 
+# 兜底副本：docs/data_lineage.md 读取失败时使用，正常运行走 docs/ 下的源文件
 _BUILTIN_LINEAGE_TEXT = (
     "# 数据溯源台账\n"
     "\n"
@@ -517,31 +519,41 @@ class RAGService:
     def _build_project_docs(self) -> List[Dict[str, Any]]:
         docs: List[Dict[str, Any]] = []
 
-        kl_path = self.artifacts_dir / "known_limitations.md"
+        # 统一路径优先级：docs/（源码版本控制）→ artifacts/final/（运行产物）→ 内置常量兜底
+        kl_path = Path(__file__).parent.parent / "docs" / "known_limitations.md"
+        if not kl_path.exists():
+            kl_path = self.artifacts_dir / "known_limitations.md"
         if kl_path.exists():
             from datetime import datetime as _dt
             mtime = _dt.fromtimestamp(kl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            self.logger.info("known_limitations.md 命中源文件: %s", kl_path)
             kl_text = f"（本文档最后修改时间：{mtime}）\n\n{kl_path.read_text(encoding='utf-8')}"
         else:
+            self.logger.warning("未找到源文件，已退到内置副本，内容可能过时 (known_limitations.md)")
             kl_text = _BUILTIN_LIMITATIONS_TEXT
         docs.extend(self._split_markdown_sections(kl_text, "known_limitations.md"))
 
-        dl_path = self.artifacts_dir / "data_lineage.md"
+        dl_path = Path(__file__).parent.parent / "docs" / "data_lineage.md"
+        if not dl_path.exists():
+            dl_path = self.artifacts_dir / "data_lineage.md"
         if dl_path.exists():
             from datetime import datetime as _dt
             mtime = _dt.fromtimestamp(dl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            self.logger.info("data_lineage.md 命中源文件: %s", dl_path)
             dl_text = f"（本文档最后修改时间：{mtime}）\n\n{dl_path.read_text(encoding='utf-8')}"
         else:
+            self.logger.warning("未找到源文件，已退到内置副本，内容可能过时 (data_lineage.md)")
             dl_text = _BUILTIN_LINEAGE_TEXT
         docs.extend(self._split_markdown_sections(dl_text, "data_lineage.md"))
 
-        # methodology.md: docs/ 优先（源码版本控制），artifacts/final/ 作为运行产物兜底
         mh_path = Path(__file__).parent.parent / "docs" / "methodology.md"
         if not mh_path.exists():
             mh_path = self.artifacts_dir / "methodology.md"
         if mh_path.exists():
+            self.logger.info("methodology.md 命中源文件: %s", mh_path)
             mh_text = mh_path.read_text(encoding="utf-8")
         else:
+            self.logger.warning("未找到 methodology.md 源文件，跳过注入")
             mh_text = ""
         if mh_text.strip():
             docs.extend(self._split_markdown_sections(mh_text, "methodology.md"))
