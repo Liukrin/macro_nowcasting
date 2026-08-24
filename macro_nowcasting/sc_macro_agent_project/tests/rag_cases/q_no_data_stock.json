@@ -1,0 +1,8 @@
+{
+  "case_id": "q_no_data_stock",
+  "tier": "lexical",
+  "description": "反向用例：股票行情——语料不覆盖，应拒答",
+  "question": "四川省的股票行情是多少？",
+  "expect_has_answer": false,
+  "expect_top1_contains": null
+}

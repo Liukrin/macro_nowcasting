@@ -1,0 +1,8 @@
+{
+  "case_id": "q_alias_chuan_gdp",
+  "tier": "lexical",
+  "description": "表述模糊查询——'川'不在区域正则（四川|川内|全省|成都|蜀）内，可能无法识别为四川",
+  "question": "川GDP增速是多少",
+  "expect_has_answer": true,
+  "expect_top1_contains": "GDP"
+}

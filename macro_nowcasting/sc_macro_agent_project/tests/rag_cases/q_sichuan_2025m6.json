@@ -1,0 +1,8 @@
+{
+  "case_id": "q_sichuan_2025m6",
+  "tier": "lexical",
+  "description": "指定月份四川整体经济查询——有时间+区域约束、无指标关键词，应退回该月四川卡片",
+  "question": "2025年6月四川经济怎么样",
+  "expect_has_answer": true,
+  "expect_top1_contains": "2025年6月"
+}

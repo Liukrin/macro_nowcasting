@@ -82,6 +82,9 @@ Critic 五维审查不通过时回退 Analyst 重写（最多 1 轮）。
 LLM 输出可靠性处理：Pydantic 宽松校验 + JSON 三级降级提取 +
 截断自适应重试 + prompt 版本化与回归用例。
 
+评测：critic_cases 20 条（真实 LLM 回归通过率 80%）、rag_cases 20 条（检索通过率 80%）。
+失败归因与分类见 [eval/badcases.md](macro_nowcasting/sc_macro_agent_project/eval/badcases.md)，已登记为已知局限 #15、#16。
+
 ## 项目结构
 
 ```
@@ -107,7 +110,7 @@ sc_macro_agent_project/
 
 ## 已知局限
 
-本项目主动记录了 14 条局限，其中最重要的一条（feature_vintage）现已实现：
+本项目主动记录了 16 条局限，其中最重要的一条（feature_vintage）现已实现：
 
 **feature_vintage 三模式已实现（默认 two_month）**——预测当季时通常仅前两月数据已发布，
 故默认 two_month；full_quarter 为泄漏上界参照（含尚未发布的第 3 个月）；

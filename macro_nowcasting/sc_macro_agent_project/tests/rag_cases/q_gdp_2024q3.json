@@ -1,0 +1,8 @@
+{
+  "case_id": "q_gdp_2024q3",
+  "tier": "lexical",
+  "description": "指定年份季度GDP查询——'2024年三季度'应解析出 quarter=3 并命中对应卡片",
+  "question": "2024年三季度四川GDP增速是多少？",
+  "expect_has_answer": true,
+  "expect_top1_contains": "2024年第3季度"
+}

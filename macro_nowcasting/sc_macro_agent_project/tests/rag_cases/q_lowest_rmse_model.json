@@ -1,0 +1,8 @@
+{
+  "case_id": "q_lowest_rmse_model",
+  "tier": "lexical",
+  "description": "模型排名查询——'哪个RMSE最低'应命中模型对比/排名文档",
+  "question": "哪个模型RMSE最低",
+  "expect_has_answer": true,
+  "expect_top1_contains": "RMSE"
+}

@@ -1,0 +1,8 @@
+{
+  "case_id": "q_cross_doc_vintage",
+  "tier": "lexical",
+  "description": "跨文档查询——feature_vintage 默认值在 methodology 第7节、泄漏上界理由在 known_limitations 第2条，需跨文档",
+  "question": "feature_vintage 的默认值是什么，full_quarter 为什么算泄漏上界",
+  "expect_has_answer": true,
+  "expect_top1_contains": "full_quarter"
+}

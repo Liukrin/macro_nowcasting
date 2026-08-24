@@ -1,0 +1,9 @@
+{
+  "case_id": "q_production_semantic",
+  "tier": "semantic",
+  "description": "语义等价查询——'生产'应指向'规模以上工业增加值'，但语料不含'生产'一词，TF-IDF 无法跨越",
+  "question": "四川的生产情况",
+  "expect_has_answer": true,
+  "expect_top1_contains": "工业增加值",
+  "known_fail": "TF-IDF 纯词汇匹配无法从'生产'跨越到'规模以上工业增加值'；语义检索（BGE）可解，见 known_limitations #11"
+}

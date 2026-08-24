@@ -1,0 +1,8 @@
+{
+  "case_id": "q_cross_region",
+  "tier": "lexical",
+  "description": "跨区域对比查询——同时提到四川和全国，需两边都能命中（diversity re-ranking 缺失的已知盲区）",
+  "question": "四川和全国比工业增速差多少",
+  "expect_has_answer": true,
+  "expect_top1_contains": "工业增加值"
+}

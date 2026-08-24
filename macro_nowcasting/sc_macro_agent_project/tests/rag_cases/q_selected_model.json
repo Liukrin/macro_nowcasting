@@ -1,0 +1,8 @@
+{
+  "case_id": "q_selected_model",
+  "tier": "lexical",
+  "description": "系统选用模型查询——应命中 selected 模型文档",
+  "question": "系统最终选用哪个模型",
+  "expect_has_answer": true,
+  "expect_top1_contains": "模型"
+}

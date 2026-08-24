@@ -1,0 +1,8 @@
+{
+  "case_id": "q_pmi_recent",
+  "tier": "lexical",
+  "description": "PMI 无区域查询——无区域约束，应命中 PMI 卡片",
+  "question": "PMI最近怎么样",
+  "expect_has_answer": true,
+  "expect_top1_contains": "PMI"
+}

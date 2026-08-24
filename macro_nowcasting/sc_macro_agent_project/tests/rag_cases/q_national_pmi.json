@@ -1,0 +1,8 @@
+{
+  "case_id": "q_national_pmi",
+  "tier": "lexical",
+  "description": "全国 PMI 查询——区域=全国、指标=PMI，应命中全国月度卡片",
+  "question": "全国PMI最近怎么样",
+  "expect_has_answer": true,
+  "expect_top1_contains": "PMI"
+}

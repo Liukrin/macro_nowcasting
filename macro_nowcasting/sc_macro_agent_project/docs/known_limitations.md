@@ -78,3 +78,19 @@ top-5 结果可能全部偏向一个区域，无法保证两个区域的结果�
   其在 level 空间 32 窗口回测 RMSE=3.210；而固定 elastic_midas 的 two_month 回测 RMSE=3.115，
   即被淘汰的 elastic_midas 反而优于被选中的 ridge_midas。
 - 该错位当前影响默认输出（app 默认预测使用 ridge_midas）。本轮仅登记，未修复。
+
+## 15. RAG 文档池未按时间/指标约束过滤
+- 评测发现（2026-08）：doc 池文档（forward_prediction、数据覆盖等）不参与 card 池的
+  时间/指标 metadata 过滤，导致无关文档逃过 query 约束：
+  - 「2030 年 GDP」（未来年份）本应拒答，却命中 forward_prediction 文档；
+  - 「2025 年 6 月四川经济」本应命中当月卡片，top1 却是「数据覆盖」文档。
+- 根因：doc 池检索无时间/指标 metadata 过滤。本轮仅登记，未修复。详见 eval/badcases.md。
+
+## 16. Critic 审阅口径缺陷（干净简报被误判）
+- 评测发现（2026-08，prompt v1.3.0，真实 LLM）：4 条「应通过」的干净用例全部被误判，
+  归因两类口径问题：
+  - pred_value 舍入：CriticAgent.review() 将 pred_value=5.37 舍入为 5.4% 传入 prompt，
+    干净简报写 5.37% 被误报「数字-语境匹配」；
+  - 时间语义：as_of_quarter(2025Q4) 与 pred_quarter(2026Q1) 不一致，叠加 nowcast 复现
+    措辞，干净简报被误报「时间一致性」。
+- 另有 1 例 passed=false 但 issues 为空（输出结构异常）。本轮仅登记，未修复。详见 eval/badcases.md。

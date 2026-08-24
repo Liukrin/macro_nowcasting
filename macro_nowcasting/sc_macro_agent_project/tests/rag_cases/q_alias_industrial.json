@@ -1,0 +1,8 @@
+{
+  "case_id": "q_alias_industrial",
+  "tier": "lexical",
+  "description": "别名查询——'规上工业'应归一化到'工业增加值'",
+  "question": "四川规上工业最近怎么样",
+  "expect_has_answer": true,
+  "expect_top1_contains": "工业增加值"
+}
