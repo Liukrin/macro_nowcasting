@@ -7,10 +7,11 @@
 累计值差分得到的单季名义值跨断点后出现严重口径跳变(2017=13.16%, 2018=16.01%,
 而官方实际增速8.1%/8.0%)。因此单季同比(qoq_yoy)口径已弃用。
 
-## 2. feature_vintage未实现
-当前所有特征使用季度完整数据(第t季度3个月全部可得)。
-two_month/one_month的发布时滞模拟尚未实现。严格来说当前管道为同期回归(contemporaneous),
-而非现时预测(nowcasting)。
+## 2. feature_vintage 已实现（默认 two_month）
+已实现 full_quarter / two_month / one_month 三模式月度截断，默认 two_month，
+因为预测当季时通常仅前两月数据已发布。full_quarter 保留当季全部 3 个月，
+作为泄漏上界参照（含尚未发布的第 3 个月）；one_month 为最保守下限。
+指标级 ragged edge（按各指标真实发布时滞截断）为后续方向。
 
 ## 3. target_lag_1未进入特征集
 16特征cap下target_lag_1被四川/全国/PMI特征挤掉。

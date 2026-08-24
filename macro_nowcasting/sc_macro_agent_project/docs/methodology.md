@@ -69,3 +69,13 @@ DFM（Dynamic Factor Model）用于从大量月度指标中提取少量共同因
 注意：立项方案中提到 GBRT（Gradient Boosted Regression Trees），但当前实现中 hybrid_residual 的残差修正组件使用的是 RandomForestRegressor（bagging 集成）而非 GBRT（boosting 集成），两者是不同的集成学习方法。默认 candidate_models 列表中也不包含独立的 GBRT 模型。
 
 实现位置：models/model_selection.py, config.py（ModelConfig.candidate_models）, models/hybrid_model.py
+
+## 7. 发布时滞与信息集设定
+
+特征侧通过 FeatureConfig.feature_vintage 控制「预测时点当季有多少个月的数据被视为已发布」，取值 full_quarter / two_month / one_month，默认 two_month。实现方式：在月度→季度聚合（_build_monthly_aggregated_panel）按 quarter_end 分组后，仅保留当季前 N 个月（N=3/2/1）再计算 mean/last/std/trend/delta/range 等聚合特征。
+
+full_quarter 为泄漏上界参照（当季 3 个月全用，含尚未发布的第 3 个月）；two_month 为默认（预测当季时通常仅前两月数据已发布）；one_month 为最保守下限。指标级 ragged edge（按各指标真实发布时滞逐月截断）为后续方向，尚未实现。
+
+三模式回测对比（elastic_midas 固定，32 窗口，level 空间）见 docs/vintage_comparison.md：full_quarter RMSE 3.139、two_month 3.115、one_month 2.989。实测结论是可用月数越少、点预测 RMSE 越低但方向准确率越低，详见该文档。
+
+实现位置：config.py（FeatureConfig.feature_vintage）, features/feature_engineering.py（_build_monthly_aggregated_panel）
