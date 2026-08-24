@@ -40,7 +40,7 @@ def match_issue_types(actual_issues: list[dict], expected_types: list[str]) -> b
 
 def main() -> None:
     # --- setup ---
-    cases_dir = Path(__file__).parent / "critic_cases"
+    cases_dir = Path(__file__).parent.parent / "tests" / "critic_cases"
     cases = load_cases(cases_dir)
 
     # --version 参数：指定提示词版本用于回归测试，不指定则用当前版本
