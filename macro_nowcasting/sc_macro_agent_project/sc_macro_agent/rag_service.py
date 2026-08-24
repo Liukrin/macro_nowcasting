@@ -30,7 +30,7 @@ _CN_TEN = '十'
 RAG_SERVICE_VERSION = "2.0.0"
 
 # ================================================================
-# 内置占位文本：云端部署无 artifacts/final/ 目录时的兜底
+# 内置占位文本：docs/ 与 artifacts/final/ 均缺失时的兜底
 # ================================================================
 # ⚠ 修改 docs/known_limitations.md 时必须同步更新此常量
 # ⚠ 修改 docs/data_lineage.md      时必须同步更新此常量
@@ -391,6 +391,8 @@ class RAGService:
         self._indicator_set: set[str] = set()
         self._entity_set: set[str] = set()
         self._caliber_notes: dict[str, str] = {}
+        # 语料文档命中来源：doc 名 → "docs" / "artifacts" / "builtin" / "skip"
+        self.doc_sources: dict[str, str] = {}
 
         # 分池索引
         self.vec_card: Optional[TfidfVectorizer] = None
@@ -521,10 +523,15 @@ class RAGService:
         docs: List[Dict[str, Any]] = []
 
         # 统一路径优先级：docs/（源码版本控制）→ artifacts/final/（运行产物）→ 内置常量兜底
-        kl_path = Path(__file__).parent.parent / "docs" / "known_limitations.md"
-        if not kl_path.exists():
-            kl_path = self.artifacts_dir / "known_limitations.md"
-        if kl_path.exists():
+        kl_docs = Path(__file__).parent.parent / "docs" / "known_limitations.md"
+        kl_art = self.artifacts_dir / "known_limitations.md"
+        if kl_docs.exists():
+            kl_path, kl_source = kl_docs, "docs"
+        elif kl_art.exists():
+            kl_path, kl_source = kl_art, "artifacts"
+        else:
+            kl_path, kl_source = None, "builtin"
+        if kl_path is not None:
             from datetime import datetime as _dt
             mtime = _dt.fromtimestamp(kl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             self.logger.info("known_limitations.md 命中源文件: %s", kl_path)
@@ -532,12 +539,18 @@ class RAGService:
         else:
             self.logger.warning("未找到源文件，已退到内置副本，内容可能过时 (known_limitations.md)")
             kl_text = _BUILTIN_LIMITATIONS_TEXT
+        self.doc_sources["known_limitations.md"] = kl_source
         docs.extend(self._split_markdown_sections(kl_text, "known_limitations.md"))
 
-        dl_path = Path(__file__).parent.parent / "docs" / "data_lineage.md"
-        if not dl_path.exists():
-            dl_path = self.artifacts_dir / "data_lineage.md"
-        if dl_path.exists():
+        dl_docs = Path(__file__).parent.parent / "docs" / "data_lineage.md"
+        dl_art = self.artifacts_dir / "data_lineage.md"
+        if dl_docs.exists():
+            dl_path, dl_source = dl_docs, "docs"
+        elif dl_art.exists():
+            dl_path, dl_source = dl_art, "artifacts"
+        else:
+            dl_path, dl_source = None, "builtin"
+        if dl_path is not None:
             from datetime import datetime as _dt
             mtime = _dt.fromtimestamp(dl_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
             self.logger.info("data_lineage.md 命中源文件: %s", dl_path)
@@ -545,17 +558,24 @@ class RAGService:
         else:
             self.logger.warning("未找到源文件，已退到内置副本，内容可能过时 (data_lineage.md)")
             dl_text = _BUILTIN_LINEAGE_TEXT
+        self.doc_sources["data_lineage.md"] = dl_source
         docs.extend(self._split_markdown_sections(dl_text, "data_lineage.md"))
 
-        mh_path = Path(__file__).parent.parent / "docs" / "methodology.md"
-        if not mh_path.exists():
-            mh_path = self.artifacts_dir / "methodology.md"
-        if mh_path.exists():
+        mh_docs = Path(__file__).parent.parent / "docs" / "methodology.md"
+        mh_art = self.artifacts_dir / "methodology.md"
+        if mh_docs.exists():
+            mh_path, mh_source = mh_docs, "docs"
+        elif mh_art.exists():
+            mh_path, mh_source = mh_art, "artifacts"
+        else:
+            mh_path, mh_source = None, "skip"
+        if mh_path is not None:
             self.logger.info("methodology.md 命中源文件: %s", mh_path)
             mh_text = mh_path.read_text(encoding="utf-8")
         else:
             self.logger.warning("未找到 methodology.md 源文件，跳过注入")
             mh_text = ""
+        self.doc_sources["methodology.md"] = mh_source
         if mh_text.strip():
             docs.extend(self._split_markdown_sections(mh_text, "methodology.md"))
 

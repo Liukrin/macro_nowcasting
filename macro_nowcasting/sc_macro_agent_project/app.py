@@ -2071,13 +2071,17 @@ def render_rag_page(data: Dict[str, Any]) -> None:
         st.caption(f"DEEPSEEK_API_KEY: {'已设置' if os.environ.get('DEEPSEEK_API_KEY') else '未设置'}")
         st.caption(f"语料文档: {len(rag.documents)} 篇 (card={len(rag.idx_card)}, doc={len(rag.idx_doc)})")
 
-        art_dir = rag.artifacts_dir
-        st.caption(f"artifacts/final 目录: {'存在' if art_dir.exists() else '不存在'} ({art_dir})")
-        if art_dir.exists():
-            kl_exists = (art_dir / "known_limitations.md").exists()
-            dl_exists = (art_dir / "data_lineage.md").exists()
-            st.caption(f"known_limitations.md: {'文件' if kl_exists else '内置占位'}")
-            st.caption(f"data_lineage.md: {'文件' if dl_exists else '内置占位'}")
+        # 语料文档命中来源三态：docs/（源码）→ artifacts/final/（运行产物）→ 内置常量兜底
+        _src_map = {
+            "docs": "docs/（源码）",
+            "artifacts": "artifacts/final/（运行产物）",
+            "builtin": "内置占位（源文件缺失）",
+            "skip": "未注入",
+        }
+        _doc_sources = getattr(rag, "doc_sources", {})
+        for _doc in ("known_limitations.md", "data_lineage.md", "methodology.md"):
+            _src = _doc_sources.get(_doc, "?")
+            st.caption(f"{_doc} 命中来源: {_src_map.get(_src, _src)}")
 
     # ---- 会话状态 ----
     if "rag_messages" not in st.session_state:
