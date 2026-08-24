@@ -100,8 +100,9 @@ class FeatureConfig:
     target_mode: str = "ytd"  # "ytd" = 累计同比 / "qoq_yoy" = 单季同比（已弃用，vintage断点）
     # 目标变换："level" = 直接预测 y_t / "delta" = 预测 Δy_t = y_t - y_{t-1}
     target_transform: str = "delta"  # "delta" = 差分预测（匹配冻结backtest配置）
-    # 发布时滞
-    feature_vintage: str = "full_quarter"
+    # 发布时滞：预测当季时通常仅前两月数据已发布，故默认 two_month；
+    # full_quarter 为泄漏上界参照，one_month 为最保守下限
+    feature_vintage: str = "two_month"
 
     # MIDAS 月度滞后通道（Exponential Almon Lag）
     build_midas_lags: bool = True
