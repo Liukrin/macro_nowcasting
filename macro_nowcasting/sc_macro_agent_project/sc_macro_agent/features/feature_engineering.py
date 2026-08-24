@@ -368,6 +368,11 @@ class FeatureEngineer:
             region = str(region)
             indicator = str(indicator)
             grp = grp.sort_values("date")
+            # 发布时滞截断：模拟预测时该季度只有前 N 个月已发布
+            if self.config.feature_vintage == "two_month":
+                grp = grp.head(2)
+            elif self.config.feature_vintage == "one_month":
+                grp = grp.head(1)
             feature_values = self._aggregate_indicator_quarter(grp)
             row = {"quarter_end": q_end}
             family = self._infer_family(indicator, metadata_df)

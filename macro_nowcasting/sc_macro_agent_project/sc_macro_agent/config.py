@@ -111,6 +111,13 @@ class FeatureConfig:
     midas_n_lags: int = 6        # 保留最近 6 个月的滞后
     midas_max_indicators: int = 4  # 上限，防止参数爆炸
 
+    def __post_init__(self) -> None:
+        if self.feature_vintage not in ("full_quarter", "two_month", "one_month"):
+            raise ValueError(
+                f"feature_vintage 非法值: {self.feature_vintage!r}；"
+                f"合法值为 full_quarter / two_month / one_month"
+            )
+
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
