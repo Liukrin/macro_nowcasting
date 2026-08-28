@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .env
 artifacts/
+data/macro.db
 .vscode/
 *.egg-info/
 dist/

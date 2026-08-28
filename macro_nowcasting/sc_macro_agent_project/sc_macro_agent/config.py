@@ -25,6 +25,9 @@ class DataConfig:
 
     pmi_excel_file: str = "pmi_data_202502.xls"
 
+    # SQLite 数据库文件（位于 data/ 目录下，存放加载后的标准化长表）
+    sqlite_db_file: str = "macro.db"
+
     allow_demo_fallback: bool = True
     merge_demo_for_backtest: bool = False
     cache_intermediate: bool = True

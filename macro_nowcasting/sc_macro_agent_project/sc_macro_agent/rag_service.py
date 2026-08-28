@@ -17,6 +17,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from .llm.client import LLMClient
 from .logging_utils import get_logger
+from .data.sql_store import SqlDataStore
 
 # ================================================================
 # 中文数字规范化（状态机，正确处理"十一""二十"等）
@@ -419,14 +420,16 @@ class RAGService:
         if not fp.exists():
             self.logger.warning("metadata_real.csv not found, caliber_note will be empty")
             return
+        store = SqlDataStore.memory()
         try:
-            md = pd.read_csv(fp)
-            for _, row in md.iterrows():
-                name = row.get("standard_name", "")
+            store.load_csv(fp, "metadata", parse_dates=())
+            md = store.query_df("SELECT * FROM metadata")
+            for rec in md.to_dict("records"):
+                name = rec.get("standard_name", "")
                 if not name or pd.isna(name):
                     continue
-                is_yoy = bool(row.get("is_yoy", False))
-                is_cumulative = bool(row.get("is_cumulative", False))
+                is_yoy = bool(rec.get("is_yoy", False))
+                is_cumulative = bool(rec.get("is_cumulative", False))
                 parts: list[str] = []
                 if is_yoy:
                     parts.append("同比")
@@ -437,6 +440,8 @@ class RAGService:
                 self._caliber_notes[str(name)] = "，".join(parts)
         except Exception as exc:
             self.logger.warning("Failed to read metadata_real.csv: %s", exc)
+        finally:
+            store.close()
 
     # ================================================================
     # B.1: 语料构建
@@ -459,39 +464,47 @@ class RAGService:
 
     def _build_indicator_cards(self) -> List[Dict[str, Any]]:
         cards = []
-        for fname, region_label, freq_label, has_caliber in [
-            ("quarterly_target_real.csv", "四川省", "quarterly", False),
-            ("monthly_local_features_real.csv", "四川省", "monthly", False),
-            ("monthly_national_features_real.csv", "全国", "monthly", True),
-        ]:
-            fp = self.data_dir / fname
-            if not fp.exists():
-                self.logger.warning("Missing data file: %s", fp)
-                continue
-            df = pd.read_csv(fp)
-            df["date"] = pd.to_datetime(df["date"])
-            for ind_name in sorted(df["indicator_name"].unique()):
-                display_name = ind_name
-                if fname == "monthly_national_features_real.csv":
-                    display_name = _PMI_SUBINDEX_PREFIX_MAP.get(ind_name, ind_name)
-                sub = df[df["indicator_name"] == ind_name].sort_values("date")
-                for _, row in sub.iterrows():
-                    dt = row["date"]
-                    val = row["indicator_value"]
-                    if pd.isna(val):
-                        continue
+        store = SqlDataStore.memory()
+        try:
+            for fname, region_label, freq_label, has_caliber in [
+                ("quarterly_target_real.csv", "四川省", "quarterly", False),
+                ("monthly_local_features_real.csv", "四川省", "monthly", False),
+                ("monthly_national_features_real.csv", "全国", "monthly", True),
+            ]:
+                fp = self.data_dir / fname
+                if not fp.exists():
+                    self.logger.warning("Missing data file: %s", fp)
+                    continue
+                store.load_csv(fp, "ind")
+                # SQL 直接产出指标卡片行：按指标名/日期排序，
+                # 年份/月份/季度由 strftime 计算，空值观测在 WHERE 中滤除
+                caliber_select = ", caliber" if has_caliber and "caliber" in store.table_columns("ind") else ""
+                rows = store.query_df(
+                    "SELECT indicator_name, date, indicator_value,"
+                    "       CAST(strftime('%Y', date) AS INTEGER) AS year,"
+                    "       CAST(strftime('%m', date) AS INTEGER) AS month,"
+                    "       ((CAST(strftime('%m', date) AS INTEGER) - 1) / 3 + 1) AS quarter"
+                    f"{caliber_select}"
+                    " FROM ind"
+                    " WHERE indicator_value IS NOT NULL AND date IS NOT NULL"
+                    " ORDER BY indicator_name, date"
+                )
+                for rec in rows.to_dict("records"):
+                    ind_name = rec["indicator_name"]
+                    display_name = ind_name
+                    if fname == "monthly_national_features_real.csv":
+                        display_name = _PMI_SUBINDEX_PREFIX_MAP.get(ind_name, ind_name)
+                    dt = pd.Timestamp(rec["date"])
+                    val = rec["indicator_value"]
                     if freq_label == "quarterly":
-                        date_str = f"{dt.year}年第{(dt.month - 1) // 3 + 1}季度"
-                        quarter_val = (dt.month - 1) // 3 + 1
+                        date_str = f"{dt.year}年第{int(rec['quarter'])}季度"
                     else:
-                        date_str = f"{dt.year}年{dt.month}月"
-                        quarter_val = (dt.month - 1) // 3 + 1
-                    caliber = None
-                    if has_caliber and "caliber" in df.columns:
-                        caliber = row.get("caliber")
+                        date_str = f"{dt.year}年{int(rec['month'])}月"
+                    quarter_val = int(rec["quarter"])
+                    caliber = rec.get("caliber") if has_caliber else None
                     caliber_suffix = f"（口径：{caliber}）" if caliber and pd.notna(caliber) else ""
                     text = (
-                        f"{date_str}，{region_label}{display_name}为{val:.1f}%{caliber_suffix}。"
+                        f"{date_str}，{region_label}{display_name}为{float(val):.1f}%{caliber_suffix}。"
                         f"数据来源：国家统计局/四川省统计局。"
                     )
                     cards.append({
@@ -500,8 +513,8 @@ class RAGService:
                             "type": "indicator_card",
                             "region": region_label,
                             "date": dt.strftime("%Y-%m-%d"),
-                            "year": dt.year,
-                            "month": dt.month,
+                            "year": int(rec["year"]),
+                            "month": int(rec["month"]),
                             "quarter": quarter_val,
                             "indicator": display_name,
                             "value": float(val),
@@ -511,6 +524,8 @@ class RAGService:
                     })
                     self._indicator_set.add(display_name)
                     self._entity_set.add(display_name)
+        finally:
+            store.close()
         # 别名 canonical 值也加入 _entity_set，使关键词抽取能命中
         # 指标名含后缀（如"_累计同比"）但别名只映射到词干。
         # 例："工业增速"→"规模以上工业增加值"，entity 为"规模以上工业增加值_累计同比"，

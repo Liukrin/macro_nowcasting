@@ -1,5 +1,6 @@
 """
 数据质量检查与文本报告生成。
+审计检查（重复、缺失、日期范围、期数统计等）基于 SQLite SQL 完成。
 """
 from __future__ import annotations
 
@@ -8,7 +9,11 @@ from typing import Any, Dict, List, Optional
 import logging
 import pandas as pd
 from .data_contracts import REQUIRED_LONG_COLUMNS, REQUIRED_METADATA_COLUMNS
-from ..utils import quarter_end
+from .sql_store import (
+    SqlDataStore,
+    sql_month_key_expr,
+    sql_quarter_key_expr,
+)
 
 _logger = logging.getLogger("sc_macro_agent.data_quality")
 
@@ -130,11 +135,15 @@ class DatasetSummary:
 class DataQualityAuditor:
     """
     针对“长表+元数据”结构做轻量审计。
+
+    实现方式：将待审表载入内存 SQLite（SqlDataStore），
+    重复检测、缺失率、日期边界、期数统计等检查均以 SQL 查询完成。
     """
 
     def __init__(self) -> None:
         self.checks: List[QualityCheck] = []
         self.summaries: List[DatasetSummary] = []
+        self._store: Optional[SqlDataStore] = None
 
     def reset(self) -> None:
         self.checks = []
@@ -143,33 +152,54 @@ class DataQualityAuditor:
     def _append(self, check_name: str, passed: bool, details: str, severity: str = "info") -> None:
         self.checks.append(QualityCheck(check_name, passed, details, severity))
 
-    def _summary(self, name: str, df: pd.DataFrame) -> DatasetSummary:
-        start = None
-        end = None
-        if "date" in df.columns and not df.empty:
-            dt = pd.to_datetime(df["date"], errors="coerce")
-            if dt.notna().any():
-                start = dt.min().strftime("%Y-%m-%d")
-                end = dt.max().strftime("%Y-%m-%d")
-        n_regions = int(df["region"].nunique()) if "region" in df.columns else 0
-        n_indicators = int(df["indicator_name"].nunique()) if "indicator_name" in df.columns else 0
-        denom = max(df.shape[0] * max(df.shape[1], 1), 1)
-        missing_ratio = float(df.isna().sum().sum() / denom)
+    def _get_store(self) -> SqlDataStore:
+        if self._store is None:
+            self._store = SqlDataStore.memory()
+        return self._store
+
+    def _table_summary(self, name: str, df: pd.DataFrame) -> DatasetSummary:
+        """用单条聚合 SQL 产出表级摘要（行数/日期边界/去重计数/缺失率）。"""
+        store = self._get_store()
+        cols = store.business_columns(name)
+        if not cols:
+            item = DatasetSummary(name=name, rows=0, columns=len(df.columns),
+                                  start_date=None, end_date=None,
+                                  n_regions=0, n_indicators=0, missing_ratio=0.0)
+            self.summaries.append(item)
+            return item
+
+        has_date = "date" in cols
+        select_parts = ["COUNT(*) AS rows_"]
+        if has_date:
+            select_parts.append('MIN(date) AS start_date, MAX(date) AS "end_date"')
+        if "region" in cols:
+            select_parts.append("COUNT(DISTINCT region) AS n_regions")
+        if "indicator_name" in cols:
+            select_parts.append("COUNT(DISTINCT indicator_name) AS n_indicators")
+        select_parts.append(f"{store.missing_null_expression(name)} AS null_count")
+        row = store.query_df(f'SELECT {", ".join(select_parts)} FROM "{name}"').iloc[0]
+
+        rows = int(row["rows_"])
+        denom = max(rows * max(len(cols), 1), 1)
         item = DatasetSummary(
             name=name,
-            rows=int(df.shape[0]),
-            columns=int(df.shape[1]),
-            start_date=start,
-            end_date=end,
-            n_regions=n_regions,
-            n_indicators=n_indicators,
-            missing_ratio=missing_ratio,
+            rows=rows,
+            columns=len(cols),
+            start_date=row.get("start_date") if has_date else None,
+            end_date=row.get("end_date") if has_date else None,
+            n_regions=int(row["n_regions"]) if "region" in cols else 0,
+            n_indicators=int(row["n_indicators"]) if "indicator_name" in cols else 0,
+            missing_ratio=float(int(row["null_count"]) / denom),
         )
         self.summaries.append(item)
         return item
 
     def validate_long_table(self, name: str, df: pd.DataFrame) -> None:
-        missing = [c for c in REQUIRED_LONG_COLUMNS if c not in df.columns]
+        store = self._get_store()
+        store.load_dataframe(name, df)
+        cols = store.business_columns(name)
+
+        missing = [c for c in REQUIRED_LONG_COLUMNS if c not in cols]
         self._append(
             f"{name}: required_columns",
             len(missing) == 0,
@@ -177,9 +207,10 @@ class DataQualityAuditor:
             "error" if missing else "info",
         )
 
-        if "date" in df.columns:
-            dt = pd.to_datetime(df["date"], errors="coerce")
-            bad = int(dt.isna().sum())
+        if "date" in cols:
+            # 不可解析日期在入表时已转为 NULL，用 SQL 计数
+            bad = int(store.query_one(
+                f'SELECT COUNT(*) FROM "{name}" WHERE date IS NULL', default=0))
             self._append(
                 f"{name}: parsable_dates",
                 bad == 0,
@@ -187,8 +218,12 @@ class DataQualityAuditor:
                 "error" if bad else "info",
             )
 
-        if {"date", "region", "indicator_name"}.issubset(df.columns):
-            dup = int(df.duplicated(subset=["date", "region", "indicator_name"]).sum())
+        if {"date", "region", "indicator_name"}.issubset(cols):
+            dup = int(store.query_one(
+                f'SELECT COALESCE(SUM(cnt - 1), 0) FROM ('
+                f"SELECT COUNT(*) AS cnt FROM \"{name}\" "
+                f"GROUP BY date, region, indicator_name HAVING COUNT(*) > 1)",
+                default=0))
             self._append(
                 f"{name}: duplicates",
                 dup == 0,
@@ -196,9 +231,9 @@ class DataQualityAuditor:
                 "warning" if dup else "info",
             )
 
-        if "indicator_value" in df.columns:
-            numeric = pd.to_numeric(df["indicator_value"], errors="coerce")
-            bad = int(numeric.isna().sum())
+        if "indicator_value" in cols:
+            bad = int(store.query_one(
+                f'SELECT COUNT(*) FROM "{name}" WHERE indicator_value IS NULL', default=0))
             self._append(
                 f"{name}: numeric_indicator_value",
                 bad == 0,
@@ -206,8 +241,12 @@ class DataQualityAuditor:
                 "warning" if bad else "info",
             )
 
-        if "frequency" in df.columns:
-            uniq = sorted(df["frequency"].astype(str).dropna().unique().tolist())
+        if "frequency" in cols:
+            uniq_row = store.query_one(
+                f'SELECT GROUP_CONCAT(DISTINCT frequency) FROM "{name}" '
+                f"WHERE frequency IS NOT NULL",
+                default="")
+            uniq = sorted([u for u in str(uniq_row).split(",") if u]) if uniq_row else []
             self._append(
                 f"{name}: frequency_values",
                 True,
@@ -215,41 +254,57 @@ class DataQualityAuditor:
                 "info",
             )
 
-        self._summary(name, df)
+        self._table_summary(name, df)
 
     def validate_metadata(self, name: str, df: pd.DataFrame) -> None:
-        missing = [c for c in REQUIRED_METADATA_COLUMNS if c not in df.columns]
+        store = self._get_store()
+        store.load_dataframe(name, df)
+        cols = store.business_columns(name)
+        missing = [c for c in REQUIRED_METADATA_COLUMNS if c not in cols]
         self._append(
             f"{name}: required_columns",
             len(missing) == 0,
             "缺失字段: " + ", ".join(missing) if missing else "字段齐全",
             "error" if missing else "info",
         )
-        self._summary(name, df)
+        self._table_summary(name, df)
 
-    def validate_quarter_alignment(self, monthly_df: pd.DataFrame, quarterly_df: pd.DataFrame) -> None:
-        if monthly_df.empty or quarterly_df.empty:
+    def validate_quarter_alignment(self, monthly_table: str, quarterly_table: str) -> None:
+        store = self._get_store()
+        if not store.table_exists(monthly_table) or not store.table_exists(quarterly_table):
             self._append("quarter_alignment", False, "monthly 或 quarterly 为空", "warning")
             return
-        m_quarters = set(pd.to_datetime(monthly_df["date"], errors="coerce").dt.to_period("Q").dropna())
-        q_quarters = set(pd.to_datetime(quarterly_df["date"], errors="coerce").dt.to_period("Q").dropna())
-        overlap = len(q_quarters & m_quarters)
+        # 用 INTERSECT 求两表季度集合的交集大小（SQL）
+        q_expr = sql_quarter_key_expr()
+        overlap = int(store.query_one(
+            f"SELECT COUNT(*) FROM ("
+            f'SELECT DISTINCT {q_expr} AS qk FROM "{monthly_table}" WHERE date IS NOT NULL '
+            f"INTERSECT "
+            f'SELECT DISTINCT {q_expr} AS qk FROM "{quarterly_table}" WHERE date IS NOT NULL)',
+            default=0))
+        m_quarters = int(store.query_one(
+            f'SELECT COUNT(DISTINCT {q_expr}) FROM "{monthly_table}" WHERE date IS NOT NULL', default=0))
+        q_quarters = int(store.query_one(
+            f'SELECT COUNT(DISTINCT {q_expr}) FROM "{quarterly_table}" WHERE date IS NOT NULL', default=0))
         self._append(
             "quarter_alignment",
             overlap > 0,
-            f"季度重叠数={overlap}; monthly_quarters={len(m_quarters)}; quarterly_quarters={len(q_quarters)}",
+            f"季度重叠数={overlap}; monthly_quarters={m_quarters}; quarterly_quarters={q_quarters}",
             "warning" if overlap == 0 else "info",
         )
 
-    def validate_target_history(self, quarterly_target_df: pd.DataFrame, min_quarters: int = 8) -> None:
-        if quarterly_target_df.empty:
+    def validate_target_history(self, table_name: str = "quarterly_target", min_quarters: int = 8) -> None:
+        store = self._get_store()
+        if not store.table_exists(table_name):
             self._append("target_history", False, "季度目标表为空", "error")
             return
-        if "indicator_name" in quarterly_target_df.columns:
-            target = quarterly_target_df[quarterly_target_df["indicator_name"].astype(str).str.contains("GDP", na=False)]
-        else:
-            target = quarterly_target_df
-        quarters = int(pd.to_datetime(target["date"], errors="coerce").dt.to_period("Q").nunique())
+        cols = store.table_columns(table_name)
+        gdp_filter = " WHERE indicator_name LIKE '%GDP%'" if "indicator_name" in cols else ""
+        quarters = int(store.query_one(
+            f'SELECT COUNT(DISTINCT {sql_quarter_key_expr()}) FROM "{table_name}"'
+            f"{gdp_filter} AND date IS NOT NULL" if gdp_filter else
+            f'SELECT COUNT(DISTINCT {sql_quarter_key_expr()}) FROM "{table_name}" WHERE date IS NOT NULL',
+            default=0))
         self._append(
             "target_history",
             quarters >= min_quarters,
@@ -257,11 +312,14 @@ class DataQualityAuditor:
             "warning" if quarters < min_quarters else "info",
         )
 
-    def validate_monthly_density(self, monthly_df: pd.DataFrame, expected_min_months: int = 12) -> None:
-        if monthly_df.empty:
+    def validate_monthly_density(self, table_name: str, expected_min_months: int = 12) -> None:
+        store = self._get_store()
+        if not store.table_exists(table_name):
             self._append("monthly_density", False, "月度表为空", "warning")
             return
-        months = int(pd.to_datetime(monthly_df["date"], errors="coerce").dt.to_period("M").nunique())
+        months = int(store.query_one(
+            f'SELECT COUNT(DISTINCT {sql_month_key_expr()}) FROM "{table_name}" WHERE date IS NOT NULL',
+            default=0))
         self._append(
             "monthly_density",
             months >= expected_min_months,
@@ -278,6 +336,10 @@ class DataQualityAuditor:
         metadata_df: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         self.reset()
+        if self._store is not None:
+            self._store.close()
+            self._store = None
+
         self.validate_long_table("quarterly_target", quarterly_target_df)
         self.validate_long_table("monthly_local", monthly_local_df)
         self.validate_long_table("monthly_national", monthly_national_df)
@@ -287,11 +349,11 @@ class DataQualityAuditor:
         if metadata_df is not None:
             self.validate_metadata("metadata", metadata_df)
 
-        self.validate_quarter_alignment(monthly_national_df, quarterly_target_df)
-        self.validate_quarter_alignment(monthly_local_df, quarterly_target_df)
-        self.validate_target_history(quarterly_target_df)
-        self.validate_monthly_density(monthly_national_df)
-        self.validate_monthly_density(monthly_local_df, expected_min_months=3)
+        self.validate_quarter_alignment("monthly_national", "quarterly_target")
+        self.validate_quarter_alignment("monthly_local", "quarterly_target")
+        self.validate_target_history("quarterly_target")
+        self.validate_monthly_density("monthly_national")
+        self.validate_monthly_density("monthly_local", expected_min_months=3)
 
         passed = all(c.passed or c.severity != "error" for c in self.checks)
         warnings = [c.details for c in self.checks if not c.passed]

@@ -1,10 +1,9 @@
 """
 特征工程模块
-
 设计目标：
 1. 输入是标准化长表
 2. 输出是季度级宽表训练面板
-3. 既支持直接消费已有 quarterly_panel，也支持从月度长表重新聚。
+3. 既支持直接消费已有 quarterly_panel,也支持从月度长表重新聚。
 4. 在小样本场景下主动限制特征数量，避免“列比样本还多很多”
 """
 from __future__ import annotations
@@ -19,19 +18,12 @@ import pandas as pd
 from ..config import FeatureConfig
 from ..exceptions import FeatureBuildError
 from .feature_registry import FeatureRegistry
+from ..data.sql_store import SqlDataStore, sql_quarter_end_expr
 from ..logging_utils import get_logger
 from ..utils import (
     cap_feature_count,
     ensure_datetime,
-    quarter_end,
-    safe_change,
     safe_corr,
-    safe_last,
-    safe_max,
-    safe_mean,
-    safe_min,
-    safe_std,
-    safe_trend,
     winsorize_series,
 )
 
@@ -42,7 +34,7 @@ def select_features_by_policy(
     config: "FeatureConfig",
     metadata_df: Optional[pd.DataFrame] = None,
 ) -> List[str]:
-    """\n    规则驱动的特征白名单选择器。\n\n    完全不依赖数据分布（方差/相关性），只根据元数据和指标名称决定入选特征。\n    传入任何子集数据，返回的特征列表都一样（消除信息泄漏）。\n    """
+
     protected = {"quarter_end", "target_value"}
     all_cols = [c for c in panel.columns if c not in protected and pd.api.types.is_numeric_dtype(panel[c])]
 
@@ -224,6 +216,8 @@ class FeatureEngineer:
     def __init__(self, config: FeatureConfig) -> None:
         self.config = config
         self.logger = get_logger("sc_macro_agent.feature_engineering")
+        # build_training_panel 期间持有的内存 SQLite，供各透视/聚合方法共用
+        self._store: Optional[SqlDataStore] = None
 
     @staticmethod
     def _sort_long(df: pd.DataFrame) -> pd.DataFrame:
@@ -258,20 +252,37 @@ class FeatureEngineer:
         return "其他"
 
     def _pivot_quarterly_target(self, quarterly_target_df: pd.DataFrame) -> pd.DataFrame:
+        """用 SQL 透视季度目标：指标过滤 → 季度映射 → 按首次出现去重。"""
         if quarterly_target_df.empty:
             raise FeatureBuildError("季度目标数据为空")
-        df = quarterly_target_df.copy()
-        df["date"] = ensure_datetime(df["date"])
-        target_df = df[df["indicator_name"] == self.config.target_indicator].copy()
-        if target_df.empty:
-            # 宽容一点：只要名字里有 GDP 就先拿来
-            target_df = df[df["indicator_name"].astype(str).str.contains("GDP", na=False)].copy()
-        if target_df.empty:
+        assert self._store is not None
+        self._store.load_dataframe("_qt", quarterly_target_df)
+        qe = sql_quarter_end_expr()
+
+        # 优先精确匹配目标指标；无命中时退化为名称含 GDP 的行（保留入表顺序）
+        n_exact = int(self._store.query_one(
+            "SELECT COUNT(*) FROM _qt WHERE indicator_name = ?",
+            (self.config.target_indicator,), default=0))
+        if n_exact > 0:
+            base_where = "indicator_name = ?"
+            base_params: tuple = (self.config.target_indicator,)
+        else:
+            base_where = "indicator_name LIKE '%GDP%'"
+            base_params = ()
+        if int(self._store.query_one(
+            f"SELECT COUNT(*) FROM _qt WHERE {base_where}", base_params, default=0)) == 0:
             raise FeatureBuildError(f"未找到目标指标: {self.config.target_indicator}")
 
-        out = target_df[["date", "region", "indicator_value"]].rename(columns={"indicator_value": "target_value"})
-        out["quarter_end"] = out["date"].dt.to_period("Q").dt.to_timestamp("Q")
-        out = out.drop_duplicates(subset=["quarter_end", "region"]).sort_values(["quarter_end", "region"]).reset_index(drop=True)
+        out = self._store.query_df(
+            f"SELECT date, region, indicator_value AS target_value, {qe} AS quarter_end "
+            f"FROM ("
+            f"  SELECT *, ROW_NUMBER() OVER ("
+            f"    PARTITION BY {qe}, region ORDER BY sql_seq) AS rn "
+            f"  FROM _qt WHERE {base_where}) "
+            f"WHERE rn = 1 ORDER BY quarter_end, region, sql_seq",
+            base_params,
+        )
+        out["quarter_end"] = pd.to_datetime(out["quarter_end"])
         return out
 
     def _pivot_existing_quarterly_panel(
@@ -282,12 +293,26 @@ class FeatureEngineer:
     ) -> pd.DataFrame:
         if quarterly_panel_df.empty:
             return pd.DataFrame()
+        assert self._store is not None
+        self._store.load_dataframe("_qp", quarterly_panel_df)
+        qe = sql_quarter_end_expr()
 
-        df = quarterly_panel_df.copy()
-        df["date"] = ensure_datetime(df["date"])
-        df["quarter_end"] = df["date"].dt.to_period("Q").dt.to_timestamp("Q")
+        # SQL 窗口函数取每组 (quarter, region, indicator) 的最后一条（等价 aggfunc='last'）
+        dedup = self._store.query_df(
+            f"SELECT {qe} AS quarter_end, region, indicator_name, indicator_value "
+            f"FROM ("
+            f"  SELECT *, ROW_NUMBER() OVER ("
+            f"    PARTITION BY {qe}, region, indicator_name "
+            f"    ORDER BY date, sql_seq DESC) AS rn "
+            f"  FROM _qp) "
+            f"WHERE rn = 1"
+        )
+        if dedup.empty:
+            return pd.DataFrame()
+        dedup["quarter_end"] = pd.to_datetime(dedup["quarter_end"])
+
         wide = (
-            df.pivot_table(
+            dedup.pivot_table(
                 index="quarter_end",
                 columns=["region", "indicator_name"],
                 values="indicator_value",
@@ -319,36 +344,64 @@ class FeatureEngineer:
             )
         return wide
 
-    def _aggregate_indicator_quarter(
-        self,
-        grp: pd.DataFrame,
-        indicator_col: str = "indicator_value",
-    ) -> Dict[str, float]:
-        values = grp[indicator_col].astype(float).tolist()
-        values_non_na = pd.Series(values).dropna()
-        first_val = float(values_non_na.iloc[0]) if not values_non_na.empty else 0.0
-        last_val = float(values_non_na.iloc[-1]) if not values_non_na.empty else 0.0
+    def _quarter_agg_sql(self, max_months: Optional[int], where: str = "") -> pd.DataFrame:
+        """月度→季度聚合的 SQL：
 
-        feats = {}
-        if self.config.use_mean_agg:
-            feats["mean"] = safe_mean(values)
-        if self.config.use_last_agg:
-            feats["last"] = safe_last(values)
-        if self.config.use_std_agg:
-            feats["std"] = safe_std(values)
-        if self.config.use_min_agg:
-            feats["min"] = safe_min(values)
-        if self.config.use_max_agg:
-            feats["max"] = safe_max(values)
-        if self.config.use_trend_agg:
-            feats["trend"] = safe_trend(values)
-        if self.config.use_qoq_delta_agg:
-            feats["delta"] = safe_change(first_val, last_val)
-        if self.config.use_range_agg:
-            feats["range"] = safe_max(values) - safe_min(values)
-        if self.config.use_availability_flags:
-            feats["available_months"] = int(values_non_na.shape[0])
-        return feats
+        - ROW_NUMBER 实现 feature_vintage 发布时滞截断（每季只保留前 N 个月）
+        - GROUP BY 直接产出 mean/last/std/min/max/trend/delta/range/available_months，
+          与原 Python 逐组聚合（safe_* 系列，skipna 语义）完全对齐：
+          * last/first 取组内非空末/首值（空组→0）
+          * std 为样本标准差（n<2→0，sqrt 由 SqlDataStore 注册的 UDF 提供）
+          * trend 为非空值按时间压缩后的 OLS 斜率（n<2→0）
+        """
+        qe = sql_quarter_end_expr()
+        grp = "region, indicator_name, quarter_end"
+        vintage_filter = f"rn <= {max_months}" if max_months else "1=1"
+        return self._store.query_df(
+            f"""
+            WITH base AS (
+                SELECT region, indicator_name, date, sql_seq,
+                       CAST(indicator_value AS REAL) AS v, {qe} AS quarter_end
+                FROM _m WHERE 1=1 {where}
+            ),
+            ordered AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY {grp} ORDER BY date, sql_seq) AS rn
+                FROM base
+            ),
+            vint AS (SELECT * FROM ordered WHERE {vintage_filter}),
+            ext AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (PARTITION BY {grp}
+                        ORDER BY (v IS NULL), date DESC, sql_seq DESC) AS rn_last,
+                    ROW_NUMBER() OVER (PARTITION BY {grp}
+                        ORDER BY (v IS NULL), date, sql_seq) AS rn_first,
+                    SUM(CASE WHEN v IS NOT NULL THEN 1 ELSE 0 END) OVER (
+                        PARTITION BY {grp} ORDER BY date, sql_seq
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS nn_cum
+                FROM vint
+            ),
+            ext2 AS (
+                SELECT *, (nn_cum - CASE WHEN v IS NOT NULL THEN 1 ELSE 0 END) AS nn_k
+                FROM ext
+            )
+            SELECT region, indicator_name, quarter_end,
+                COALESCE(AVG(v), 0.0) AS mean_val,
+                COALESCE(MAX(CASE WHEN rn_last = 1 THEN v END), 0.0) AS last_val,
+                COALESCE(MAX(CASE WHEN rn_first = 1 THEN v END), 0.0) AS first_val,
+                COUNT(v) AS n_avail,
+                COALESCE(MIN(v), 0.0) AS min_val,
+                COALESCE(MAX(v), 0.0) AS max_val,
+                CASE WHEN COUNT(v) >= 2 THEN
+                    sqrt((SUM(v*v) - SUM(v)*SUM(v)/COUNT(v)) / (COUNT(v) - 1))
+                    ELSE 0.0 END AS std_val,
+                CASE WHEN COUNT(v) >= 2 THEN
+                    (COUNT(v) * SUM((nn_k) * v) - SUM(nn_k) * SUM(v)) /
+                    NULLIF(COUNT(v) * SUM(nn_k*nn_k) - SUM(nn_k)*SUM(nn_k), 0)
+                    ELSE 0.0 END AS trend_val
+            FROM ext2
+            GROUP BY {grp}
+            """
+        )
 
     def _build_monthly_aggregated_panel(
         self,
@@ -359,44 +412,70 @@ class FeatureEngineer:
     ) -> pd.DataFrame:
         if monthly_df.empty:
             return pd.DataFrame()
+        assert self._store is not None
+        self._store.load_dataframe("_m", self._sort_long(monthly_df))
 
-        df = self._sort_long(monthly_df)
-        df["quarter_end"] = quarter_end(df["date"])
+        # 发布时滞截断：模拟预测时该季度只有前 N 个月已发布
+        max_months = None
+        if self.config.feature_vintage == "two_month":
+            max_months = 2
+        elif self.config.feature_vintage == "one_month":
+            max_months = 1
+
+        agg = self._quarter_agg_sql(max_months)
+        if agg.empty:
+            return pd.DataFrame()
+
+        suffix_map = [
+            ("mean", "mean_val", self.config.use_mean_agg),
+            ("last", "last_val", self.config.use_last_agg),
+            ("std", "std_val", self.config.use_std_agg),
+            ("min", "min_val", self.config.use_min_agg),
+            ("max", "max_val", self.config.use_max_agg),
+            ("trend", "trend_val", self.config.use_trend_agg),
+            ("delta", None, self.config.use_qoq_delta_agg),
+            ("range", None, self.config.use_range_agg),
+            ("available_months", "n_avail", self.config.use_availability_flags),
+        ]
 
         rows: List[Dict[str, Any]] = []
-        for (region, indicator, q_end), grp in df.groupby(["region", "indicator_name", "quarter_end"]):
-            region = str(region)
-            indicator = str(indicator)
-            grp = grp.sort_values("date")
-            # 发布时滞截断：模拟预测时该季度只有前 N 个月已发布
-            if self.config.feature_vintage == "two_month":
-                grp = grp.head(2)
-            elif self.config.feature_vintage == "one_month":
-                grp = grp.head(1)
-            feature_values = self._aggregate_indicator_quarter(grp)
-            row = {"quarter_end": q_end}
+        for rec in agg.to_dict("records"):
+            region = str(rec["region"])
+            indicator = str(rec["indicator_name"])
+            q_end = pd.Timestamp(rec["quarter_end"])
+            row: Dict[str, Any] = {"quarter_end": q_end}
             family = self._infer_family(indicator, metadata_df)
-            for suffix, value in feature_values.items():
-                col = f"{region}__{indicator}_{suffix}"
-                row[col] = value
+            for suffix, col, enabled in suffix_map:
+                if not enabled:
+                    continue
+                if suffix == "delta":
+                    value = float(rec["last_val"]) - float(rec["first_val"])
+                elif suffix == "range":
+                    value = float(rec["max_val"]) - float(rec["min_val"])
+                elif suffix == "available_months":
+                    value = int(rec[col])
+                else:
+                    value = float(rec[col])
+                col_name = f"{region}__{indicator}_{suffix}"
+                row[col_name] = value
                 registry.register(
-                    name=col,
+                    name=col_name,
                     source_table=source_table_name,
                     source_indicator=indicator,
                     region=region,
                     family=family,
                     transform=suffix,
                     frequency="quarterly",
-                    note="aggregated from monthly long table",
+                    note="aggregated from monthly long table via SQL",
                 )
             rows.append(row)
 
         if not rows:
             return pd.DataFrame()
 
-        agg = pd.DataFrame(rows)
-        agg = agg.groupby("quarter_end", as_index=False).first()
-        return agg.sort_values("quarter_end").reset_index(drop=True)
+        agg_df = pd.DataFrame(rows)
+        agg_df = agg_df.groupby("quarter_end", as_index=False).first()
+        return agg_df.sort_values("quarter_end").reset_index(drop=True)
 
     def _build_midas_lag_panel(
         self,
@@ -405,10 +484,15 @@ class FeatureEngineer:
         registry: FeatureRegistry,
         metadata_df: Optional[pd.DataFrame] = None,
     ) -> Tuple[pd.DataFrame, List[str]]:
-        """从月度长表构建 MIDAS 滞后面板。
+        """从月度长表构建 MIDAS 滞后面板（SQL 窗口函数版）。
 
         对每个 (region, indicator) 按季度生成 midas_n_lags 个滞后列，保留原始
         月度值而非聚合，供 AlmonMIDASModel 使用。
+
+        SQL 实现：
+        - ROW_NUMBER 建立 (region, indicator) 内的时间序号 rn
+        - 每季取首条观测为锚点（MIN(rn)，与原实现 quarters_seen 语义一致）
+        - L{k} = 锚点向前第 k 条观测的值（条件聚合 CASE WHEN 完成）
 
         Returns:
             (midas_panel, notes) — midas_panel 以 quarter_end 为索引，
@@ -417,18 +501,20 @@ class FeatureEngineer:
         notes: List[str] = []
         if monthly_df.empty or not self.config.build_midas_lags:
             return pd.DataFrame(), notes
+        assert self._store is not None
+        self._store.load_dataframe("_m", self._sort_long(monthly_df))
 
-        df = self._sort_long(monthly_df)
-        df["quarter_end"] = quarter_end(df["date"])
-        df["month_rank_in_quarter"] = df.groupby(
-            ["region", "indicator_name", "quarter_end"]
-        ).cumcount(ascending=False)  # 0 = 最新月
+        # 按首次出现顺序取指标名（等价 df["indicator_name"].unique()）
+        first_seen = self._store.query_df(
+            "SELECT indicator_name FROM ("
+            "  SELECT indicator_name, MIN(sql_seq) AS fr FROM _m"
+            "  GROUP BY indicator_name ORDER BY fr)"
+        )
+        all_indicators = first_seen["indicator_name"].astype(str).tolist()
 
         # 子串匹配挑选指标
-        all_indicators = df["indicator_name"].unique().tolist()
         matched: List[str] = []
-        for ind in all_indicators:
-            ind_str = str(ind)
+        for ind_str in all_indicators:
             for kw in self.config.midas_indicator_keywords:
                 if kw in ind_str:
                     matched.append(ind_str)
@@ -442,44 +528,54 @@ class FeatureEngineer:
             matched = matched[: self.config.midas_max_indicators]
             notes.append(f"midas_capped_to_{self.config.midas_max_indicators}")
 
-        df_matched = df[df["indicator_name"].isin(matched)].copy()
+        qe = sql_quarter_end_expr()
+        n_lags = self.config.midas_n_lags
+        placeholders = ", ".join(["?"] * len(matched))
+        lag_cases = "\n".join(
+            f"MAX(CASE WHEN r.rn = a.anchor_rn - {k} THEN r.v END) AS L{k},"
+            for k in range(n_lags)
+        )
+        rows = self._store.query_df(
+            f"""
+            WITH ranked AS (
+                SELECT region, indicator_name, date, sql_seq,
+                       CAST(indicator_value AS REAL) AS v, {qe} AS q_end,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY region, indicator_name
+                           ORDER BY date, sql_seq) AS rn
+                FROM _m WHERE indicator_name IN ({placeholders})
+            ),
+            anchors AS (
+                SELECT region, indicator_name, q_end, MIN(rn) AS anchor_rn
+                FROM ranked GROUP BY region, indicator_name, q_end
+            )
+            SELECT a.q_end AS quarter_end, a.region, a.indicator_name,
+                   {lag_cases.rstrip(',')}
+            FROM anchors a
+            LEFT JOIN ranked r
+              ON r.region = a.region AND r.indicator_name = a.indicator_name
+             AND r.rn BETWEEN a.anchor_rn - {n_lags - 1} AND a.anchor_rn
+             AND r.date <= a.q_end
+            GROUP BY a.q_end, a.region, a.indicator_name
+            ORDER BY a.region, a.indicator_name, a.q_end
+            """,
+            matched,
+        )
 
-        # 对每个 (region, indicator) 按时间排序，为每个季度生成滞后列
-        # L0 = 该季度最后一个月, L1 = 倒数第二月, ..., L5 = 上上季度第一个月
-        rows: List[Dict[str, Any]] = []
-        for (region, indicator), grp in df_matched.groupby(
-            ["region", "indicator_name"]
-        ):
-            region = str(region)
-            indicator = str(indicator)
-            grp = grp.sort_values("date").reset_index(drop=True)
-            # 构建日期→值的查找表
-            dates = grp["date"].tolist()
-            values = grp["indicator_value"].tolist()
-            # 为每个季度生成一行
-            quarters_seen: set = set()
-            for idx in range(len(dates)):
-                # Normalize to quarter start (midnight) to match _pivot_quarterly_target
-                q_end = pd.Timestamp(dates[idx]).to_period("Q").to_timestamp("Q")
-                if q_end in quarters_seen:
-                    continue
-                quarters_seen.add(q_end)
-                row: Dict[str, Any] = {"quarter_end": q_end}
-                # 从当前日期位置往回走 midas_n_lags 步
-                for k in range(self.config.midas_n_lags):
-                    col_name = f"midas__{region}__{indicator}__L{k}"
-                    src_idx = idx - k
-                    if src_idx >= 0 and dates[src_idx] <= q_end:
-                        row[col_name] = float(values[src_idx])
-                    else:
-                        row[col_name] = np.nan
-                rows.append(row)
-
-        if not rows:
+        if rows.empty:
             notes.append("midas_empty_after_pivot")
             return pd.DataFrame(), notes
 
-        midas_panel = pd.DataFrame(rows)
+        # 长表 → 宽表：列名 midas__{region}__{indicator}__L{k}
+        wide_rows: List[Dict[str, Any]] = []
+        for rec in rows.to_dict("records"):
+            row: Dict[str, Any] = {"quarter_end": pd.Timestamp(rec["quarter_end"])}
+            for k in range(n_lags):
+                col_name = f"midas__{rec['region']}__{rec['indicator_name']}__L{k}"
+                row[col_name] = rec.get(f"L{k}")
+            wide_rows.append(row)
+
+        midas_panel = pd.DataFrame(wide_rows)
         midas_panel = midas_panel.groupby("quarter_end", as_index=False).first()
         midas_panel = midas_panel.sort_values("quarter_end").reset_index(drop=True)
 
@@ -693,6 +789,29 @@ class FeatureEngineer:
         registry = FeatureRegistry()
         notes: List[str] = []
 
+        # 内存 SQLite：本方法内所有透视/聚合查询的执行引擎
+        self._store = SqlDataStore.memory()
+        try:
+            return self._build_training_panel_inner(
+                quarterly_target_df, monthly_local_df, monthly_national_df,
+                quarterly_panel_df, metadata_df, quarterly_factor_frame,
+                registry, notes,
+            )
+        finally:
+            self._store.close()
+            self._store = None
+
+    def _build_training_panel_inner(
+        self,
+        quarterly_target_df: pd.DataFrame,
+        monthly_local_df: pd.DataFrame,
+        monthly_national_df: pd.DataFrame,
+        quarterly_panel_df: Optional[pd.DataFrame],
+        metadata_df: Optional[pd.DataFrame],
+        quarterly_factor_frame: Optional[pd.DataFrame],
+        registry: FeatureRegistry,
+        notes: List[str],
+    ) -> FeatureArtifacts:
         target = self._pivot_quarterly_target(quarterly_target_df)
         # 真实数据只保留四川省目标
         target = target[target["region"].astype(str).str.contains("四川", na=False)].copy()

@@ -92,23 +92,32 @@ class BriefingGenerator:
         else:
             metrics_text = "  （本次未运行回测，无可用评估指标）"
 
-        # --- 月度指标 ---
+        # --- 月度指标（SQL 窗口函数取每指标 2025 年以来最新一条） ---
+        from ..data.sql_store import SqlDataStore
         ml_path = data_dir / "monthly_local_features_real.csv"
         ind_lines = []
         if not ml_path.exists():
             self.logger.warning("Missing data file: %s", ml_path)
         else:
-            ml = pd.read_csv(ml_path)
-            ml["date"] = pd.to_datetime(ml["date"])
-            ml_recent = ml[ml["date"] >= "2025-01-01"]
-            for ind in sorted(ml_recent["indicator_name"].unique()):
-                sub = ml_recent[ml_recent["indicator_name"] == ind].sort_values("date")
-                if len(sub) > 0:
-                    last = sub.iloc[-1]
+            store = SqlDataStore.memory()
+            try:
+                store.load_csv(ml_path, "monthly_local")
+                recent = store.query_df(
+                    "SELECT indicator_name, date, indicator_value FROM ("
+                    "  SELECT indicator_name, date, indicator_value,"
+                    "         ROW_NUMBER() OVER (PARTITION BY indicator_name"
+                    "                            ORDER BY date DESC, sql_seq DESC) AS rn"
+                    "  FROM monthly_local"
+                    "  WHERE date >= '2025-01-01' AND indicator_value IS NOT NULL"
+                    ") WHERE rn = 1 ORDER BY indicator_name"
+                )
+                for _, row in recent.iterrows():
                     ind_lines.append(
-                        f"  {ind}: {last['date'].strftime('%Y-%m')} "
-                        f"值 {last['indicator_value']:.1f}%"
+                        f"  {row['indicator_name']}: {str(row['date'])[:7]} "
+                        f"值 {float(row['indicator_value']):.1f}%"
                     )
+            finally:
+                store.close()
 
         return {
             "as_of_quarter": as_of_quarter,

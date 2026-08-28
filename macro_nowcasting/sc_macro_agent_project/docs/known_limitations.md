@@ -13,9 +13,10 @@
 作为泄漏上界参照（含尚未发布的第 3 个月）；one_month 为最保守下限。
 指标级 ragged edge（按各指标真实发布时滞截断）为后续方向。
 
-## 3. target_lag_1未进入特征集
-16特征cap下target_lag_1被四川/全国/PMI特征挤掉。
-模型无法显式使用y_{t-1},缺少锚点。
+## 3. target_lag_1未进入特征集（已随 SQL 改造修复）
+旧版（pandas 实现）中 target_lag_1 缺失的根因并非特征 cap 挤占，
+而是季度时间戳错位 bug（见第 17 条）：target_lag_1 在目标行上全为 NaN，
+被缺失过滤器丢弃。SQL 改造后 target_lag_1 已正常进入特征集。
 
 ## 4. chronos-2-small API不兼容
 Chronos2Pipeline要求3D输入(n_series, n_variates, history_length),
@@ -94,3 +95,17 @@ top-5 结果可能全部偏向一个区域，无法保证两个区域的结果�
   - 时间语义：as_of_quarter(2025Q4) 与 pred_quarter(2026Q1) 不一致，叠加 nowcast 复现
     措辞，干净简报被误报「时间一致性」。
 - 另有 1 例 passed=false 但 issues 为空（输出结构异常）。本轮仅登记，未修复。详见 eval/badcases.md。
+
+## 17. 旧版季度时间戳错位 bug（SQL 改造中发现并修复）
+- 旧版 pandas 实现中，目标/季度面板/MIDAS 的季度时间戳为 `to_timestamp("Q")`
+  （季末日零点，如 2024-03-31 00:00:00），而月度聚合面板用 `utils.quarter_end`
+  （`to_timestamp(how="end")`，即 2024-03-31 23:59:59.999999999），
+  两者相差约 1 纳秒，`merge(on="quarter_end")` 永不命中。
+- 后果：outer 合并后目标行与聚合行交错排列（行数翻倍），shift 类滞后在交错行上计算：
+  - 月度聚合基础列在目标行上全为 NaN，被缺失过滤丢弃；仅其 `__lag1` 变体因行错位
+    恰好携带上一季度聚合值而幸存（语义碰巧正确）；`__lag2` 变体全为 NaN 被丢弃；
+  - `target_lag_1` 全为 NaN 被丢弃（即第 3 条的真实根因），`target_lag_4` 实际为
+    滞后 2 期的值。
+- SQL 改造后所有季度时间戳统一为季末日零点（`sql_quarter_end_expr`），
+  月度聚合正确对齐，基础列与 `__lag1`/`__lag2`、`target_lag_1`/`target_lag_4`
+  均按正确语义进入面板。这导致新旧特征选择结果不同（属修复而非回归）。
