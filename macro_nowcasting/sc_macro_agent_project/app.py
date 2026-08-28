@@ -463,8 +463,11 @@ def safe_df(data: Any) -> pd.DataFrame:
 
 
 def mapping_df(mapping: Dict[str, Any]) -> pd.DataFrame:
-    return pd.DataFrame([{"字段": k, "值": v} for k, v in mapping.items()]) if mapping else pd.DataFrame(
-        columns=["字段", "值"])
+    if not mapping:
+        return pd.DataFrame(columns=["字段", "值"])
+    # 值统一转字符串：混型列（str/int/list 混杂）会让 st.dataframe 的
+    # pyarrow 序列化报 ArrowTypeError（Expected bytes, got a 'int' object）
+    return pd.DataFrame([{"字段": k, "值": str(v)} for k, v in mapping.items()])
 
 
 def render_section(label: str, title: str, note: str) -> None:
