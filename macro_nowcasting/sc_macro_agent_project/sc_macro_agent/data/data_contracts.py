@@ -1,8 +1,7 @@
 """
-数据契约定义。
-
-这里把长表格式下的关键列、频率和默认文件名尽量集中起来，
-方便以后做更严格的 schema 校验或者迁移到 pydantic/pandera。
+数据契约定义
+这里把长表格式下的关键列、频率和默认文件名尽量集中起来
+方便以后做schema校验或者迁移到pydantic/pandera
 """
 from __future__ import annotations
 

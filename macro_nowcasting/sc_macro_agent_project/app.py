@@ -10,6 +10,11 @@ except ImportError as e:
     # streamlit itself is missing — nothing we can do; let it crash with a clear message
     raise RuntimeError(f"streamlit 未安装，请检查 requirements.txt: {e}") from e
 
+try:
+    import streamlit.components.v1 as _st_components
+except ImportError:
+    _st_components = None
+
 st.set_page_config(
     page_title="四川省 GDP 混频预测系统",
     page_icon="◐",
@@ -34,6 +39,7 @@ try:
     from typing import Any, Dict, Iterable, Tuple
 
     import inspect
+    import json
 
     from dotenv import load_dotenv
     load_dotenv()
@@ -119,7 +125,9 @@ CUSTOM_CSS = f"""
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     }}
     #MainMenu {{visibility: hidden;}}
-    header {{visibility: hidden;}}
+    [data-testid="stHeaderLogo"] {{display: none;}}
+    /* 注意：不能整体隐藏 header！Streamlit 1.46+ 侧边栏折叠时的展开按钮
+       （stExpandSidebarButton）渲染在 header 内，隐藏 header 会连带杀死展开入口 */
     footer {{visibility: hidden;}}
     .block-container {{
         max-width: 1400px;
@@ -269,6 +277,31 @@ CUSTOM_CSS = f"""
     [data-testid="stSidebar"] .block-container {{
         padding: 2rem 1.5rem;
     }}
+    /* 折叠态展开按钮强化（streamlit 1.61 testid：stExpandSidebarButton）：
+       胶囊样式 + 发光描边 + 文字提示，确保深色主题下一眼可见 */
+    [data-testid="stExpandSidebarButton"] {{
+        visibility: visible !important;
+        position: fixed;
+        top: 1rem;
+        left: 0.75rem;
+        z-index: 1000;
+        background: {COLORS["bg_secondary"]};
+        border: 1px solid {COLORS["accent_cyan_dim"]};
+        border-radius: 999px;
+        padding: 0.4rem 1rem;
+        box-shadow: 0 0 12px rgba(34, 211, 238, 0.25);
+    }}
+    [data-testid="stExpandSidebarButton"]:hover {{
+        border-color: {COLORS["accent_cyan"]};
+        box-shadow: 0 0 18px rgba(34, 211, 238, 0.45);
+    }}
+    [data-testid="stExpandSidebarButton"]::after {{
+        content: "展开导航";
+        font-size: 0.8rem;
+        color: {COLORS["accent_cyan"]};
+        letter-spacing: 0.05em;
+        margin-left: 0.4rem;
+    }}
     .stRadio > div {{
         background: {COLORS["bg_tertiary"]};
         border-radius: 12px;
@@ -340,6 +373,34 @@ CUSTOM_CSS = f"""
 """
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# 自愈脚本：Streamlit 会把侧边栏折叠状态持久化到 localStorage（key: stSidebarCollapsed-*），
+# 一旦记住折叠，initial_sidebar_state="expanded" 也会被覆盖。
+# 每个浏览器会话首次加载时清除该标记并自动展开侧边栏；
+# 之后用户仍可手动折叠，不会被反复弹开。
+if _st_components is not None:
+    _st_components.html("""
+    <script>
+    (function() {
+      var KEY = "scMacroSidebarAutoExpandDone";
+      try {
+        if (window.parent.sessionStorage.getItem(KEY) === "1") return;
+        window.parent.sessionStorage.setItem(KEY, "1");
+        Object.keys(window.parent.localStorage)
+          .filter(function(k) { return k.indexOf("stSidebarCollapsed-") === 0; })
+          .forEach(function(k) { window.parent.localStorage.removeItem(k); });
+      } catch (e) {}
+      function tryExpand(n) {
+        var doc = window.parent.document;
+        if (doc.querySelector('[data-testid="stSidebarCollapseButton"]')) return; // 已展开
+        var btn = doc.querySelector('[data-testid="stExpandSidebarButton"]');
+        if (btn) { btn.click(); return; }
+        if ((n || 0) < 20) { setTimeout(function() { tryExpand((n || 0) + 1); }, 250); }
+      }
+      setTimeout(function() { tryExpand(0); }, 300);
+    })();
+    </script>
+    """, height=0)
 
 
 def fmt_number(value: Any, digits: int = 2, default: str = "-") -> str:
@@ -1347,6 +1408,7 @@ def render_nowcast(data: Dict[str, Any]) -> None:
 def render_backtest(data: Dict[str, Any]) -> None:
     metrics = data["backtest"].get("metrics", {}) or {}
     window_df = data["window_df"]
+    summary = data["summary"]
 
     render_section("Backtest", "历史回测分析", "扩展窗口交叉验证 · level 空间 · 32 窗口")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict
+from datetime import datetime
 
 from ..prediction_engine import PredictionEngine
 
@@ -37,7 +38,6 @@ def _extract_latest_quarter(audit_result: Dict[str, Any]) -> str:
         if s.get("name") == "quarterly_target":
             end = s.get("end_date", "")
             if end:
-                from datetime import datetime
                 try:
                     dt = datetime.strptime(end[:10], "%Y-%m-%d")
                     return f"{dt.year}Q{(dt.month-1)//3+1}"
