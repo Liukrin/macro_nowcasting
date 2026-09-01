@@ -8,7 +8,7 @@
 - FeatureEngineer 负责季度面板构建
 - ModelSelector / Backtester 负责训练和回测
 - ReportBuilder 负责产物输出
-- ForecastAgent 负责“任务步骤留痕”
+- StepTracker 负责“任务步骤留痕”
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .agent import ForecastAgent
+from .step_tracker import StepTracker
 from .config import AppConfig
 from .data.data_manager import DataManager, DataBundle
 from .data.data_quality import DataQualityAuditor, run_adf_tests
@@ -48,7 +48,7 @@ class PredictionEngine:
         self.selector = ModelSelector(self.config.model)
         self.backtester = ExpandingWindowBacktester(self.config.backtest, self.config.model)
         self.report_builder = ReportBuilder()
-        self.agent = ForecastAgent(self.config.agent)
+        self.agent = StepTracker(self.config.agent)
 
         self.bundle: Optional[DataBundle] = None
         self.audit_result: Optional[Dict[str, Any]] = None

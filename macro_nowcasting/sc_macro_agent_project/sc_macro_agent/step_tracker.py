@@ -1,14 +1,9 @@
 """
-轻量 Agent Orchestrator。
+任务步骤追踪器（StepTracker）。
 
-这个模块不碰大模型 API，它更像一个“可追踪的任务编排器”：
-- 审计数据
-- 构建特征
-- 训练模型
-- 回测
-- 生成报告
-
-“不是单一预测脚本，而是一个会分阶段执行、留痕和产物管理的任务代理。”
+这个模块不碰大模型 API，也不是编排器本身，它只负责“分步执行留痕”：
+为审计数据、构建特征、训练模型、回测、生成报告等步骤记录状态与产物，
+供 Agent Orchestrator 使用。
 """
 from __future__ import annotations
 
@@ -37,10 +32,10 @@ class AgentStep:
         return asdict(self)
 
 
-class ForecastAgent:
+class StepTracker:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
-        self.logger = get_logger("sc_macro_agent.agent")
+        self.logger = get_logger("sc_macro_agent.step_tracker")
         self.steps: List[AgentStep] = []
         self.warnings: List[str] = []
 

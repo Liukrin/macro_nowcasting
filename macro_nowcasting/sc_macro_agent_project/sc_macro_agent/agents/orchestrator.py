@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from ..agent import ForecastAgent
+from ..step_tracker import StepTracker
 from ..config import AppConfig
 from ..prediction_engine import PredictionEngine
 from ..llm.client import LLMClient
@@ -29,7 +29,7 @@ class AgentOrchestrator:
         cfg = config or AppConfig()
         self.logger = get_logger("sc_macro_agent.orchestrator")
         self.llm = LLMClient.get_instance()
-        self.agent = ForecastAgent(cfg.agent)
+        self.agent = StepTracker(cfg.agent)
         self.data_agent = DataAgent()
         self.model_agent = ModelAgent(cfg)
         self.analyst_agent = AnalystAgent(cfg)
